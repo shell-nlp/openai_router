@@ -1,0 +1,15 @@
+[project]
+name = "openai-router"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.120.3",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "uvicorn>=0.38.0",
+]
+[[tool.uv.index]]
+url = "https://pypi.org/simple/"
+default = true
