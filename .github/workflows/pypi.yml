@@ -33,7 +33,7 @@ jobs:
         python-version: '3.11' # 与 pyproject.toml  保持一致 
 
     - name: Build package
-      run: uv build --wheel
+      run: uv build
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
