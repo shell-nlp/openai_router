@@ -18,15 +18,15 @@
 </p>
  
 ---
- 
+- 将不同推理框架（vLLM、SGLang、lmdeploy、Ollama… ）、不同`Host`、不同`Port`的`OpenAI` API接口统一聚合到同一个`base_url`上，实现更便捷的模型调用。
 ## ✨ Features 
-| Feature | Description |
-|---------|-------------|
-| 🌍 统一入口 | `/chat/completions`、`/embeddings`、`/images/generations`… 全部转发 |
-| 🧩 多后端 | vLLM、SGLang、lmdeploy、Ollama… 任意组合 |
-| 💾 持久化 | SQLite + SQLModel 零配置存储路由 |
-| ⚡ 实时流 | SSE & Chunked Transfer 全双工支持 |
-| 🎨 Web UI | Gradio 即用的管理面板 |
+| Feature       | Description                                                               |
+| ------------- | ------------------------------------------------------------------------- |
+| 🌍 统一入口    | `/chat/completions`、`/embeddings`、`/images/generations`… 全部转发       |
+| 🧩 多后端      | vLLM、SGLang、lmdeploy、Ollama… 任意组合                                  |
+| 💾 持久化      | SQLite + SQLModel 零配置存储路由                                          |
+| ⚡ 实时流      | SSE & Chunked Transfer 全双工支持                                         |
+| 🎨 Web UI      | Gradio 即用的管理面板                                                     |
 | 🔍 兼容 OpenAI | SDK / LangChain / AutoGen / LlamaIndex / CrewAI  …等 **一行代码都不用改** |
  
 ---
@@ -52,13 +52,15 @@ openai-router --host localhost --port 8000
 ```
 浏览器自动打开  
 📍 UI：`http://localhost:8000`  
-📍 API：`http://localhost:8000/v1`
+📍 API 文档：`http://localhost:8000/docs`
  
-Step-3：添加后端 
+### Step-3：添加后端样例
 在 Web UI 「添加 / 更新」填入：
 - 模型名：`gpt-4`
-- 后端 URL：`http://localhost:8080/v1`
- 
+- 后端 URL：`http://localhost:8082/v1`
+- 后端 API 密钥 (可选) ：
+如果提供，路由器将使用此密钥覆盖原始请求中的 Authorization 标头。如果留空，将透传原始请求的密钥。
+
 <img src="static/ui.png" width="800">
  
 ---
@@ -90,29 +92,29 @@ curl http://localhost:8000/v1/chat/completions \
 ---
  
 ## 🗂️ Endpoints 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Gradio Admin UI |
-| `GET` | `/docs` | OpenAPI Swagger |
-| `GET` | `/v1/models` | List available models |
- `POST` | `/v1/responses` | Responses API |
-| `POST` | `/v1/chat/completions` | Chat completion |
-| `POST` | `/v1/embeddings` | Text embeddings |
-| `POST` | `/v1/images/generations` | DALL·E style |
-| `POST` | `/v1/audio/transcriptions` | Whisper |
-| … | … | All OpenAI endpoints supported |
+| Method | Path                       | Description                    |
+| ------ | -------------------------- | ------------------------------ |
+| `GET`  | `/`                        | Gradio Admin UI                |
+| `GET`  | `/docs`                    | OpenAPI Swagger                |
+| `GET`  | `/v1/models`               | List available models          |
+| `POST` | `/v1/responses`            | Responses API                  |
+| `POST` | `/v1/chat/completions`     | Chat completion                |
+| `POST` | `/v1/embeddings`           | Text embeddings                |
+| `POST` | `/v1/images/generations`   | DALL·E style                   |
+| `POST` | `/v1/audio/transcriptions` | Whisper                        |
+| …      | …                          | All OpenAI endpoints supported |
  
 ---
  
 ## ⚙️ Configuration 
 CLI Options 
 ```bash 
-python -m openai_router.main --help 
+openai-router --help 
 ```
-| Flag | Default | Description |
-|------|---------|-------------|
+| Flag     | Default     | Description  |
+| -------- | ----------- | ------------ |
 | `--host` | `localhost` | Bind address |
-| `--port` | `8000` | Bind port |
+| `--port` | `8000`      | Bind port    |
  
 
 ---
