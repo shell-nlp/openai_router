@@ -14,6 +14,7 @@
 <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-v0.115+-teal?style=flat-square"></a>
 <a href="https://gradio.app"><img src="https://img.shields.io/badge/Gradio-v5+-orange?style=flat-square"></a>
 <a href="#"><img src="https://img.shields.io/badge/SQLite-内置存储-lightgrey?style=flat-square"></a>
+<a href="https://pypi.org/project/openai-router/"><img  src="https://img.shields.io/pypi/v/openai-router?style=flat-square&logo=pypi&label=PyPI"></a> 
 </p>
  
 ---
@@ -26,20 +27,28 @@
 | 💾 持久化 | SQLite + SQLModel 零配置存储路由 |
 | ⚡ 实时流 | SSE & Chunked Transfer 全双工支持 |
 | 🎨 Web UI | Gradio 即用的管理面板 |
-| 🔍 兼容 OpenAI | SDK / LangChain / AutoGen 等无需改动一行代码 |
+| 🔍 兼容 OpenAI | SDK / LangChain / AutoGen / LlamaIndex / CrewAI  …等 **一行代码都不用改** |
  
 ---
  
-### 📦 Quick Start 
-Step-1：安装 
+## 📦 Quick Start 
+### Step-1：安装 
+
+#### PyPI（推荐）
+
 ```bash 
-uv sync
+uv add openai-router -U
+```
+或者
+```bash 
+pip install openai-router -U
 ```
 
+
  
-Step-2：启动 
+### Step-2：启动 
 ```bash 
-python -m openai_router.main --host localhost --port 8000 
+openai-router --host localhost --port 8000 
 ```
 浏览器自动打开  
 📍 UI：`http://localhost:8000`  

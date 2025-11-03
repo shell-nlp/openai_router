@@ -1,6 +1,6 @@
 [project]
 name = "openai-router"
-version = "0.1.0"
+version = "0.1.1"
 description = "openai-router"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-openai_router = "openai_router.main:cli_app"
+openai-router = "openai_router.main:cli_app"
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple/"
