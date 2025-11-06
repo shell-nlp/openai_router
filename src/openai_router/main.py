@@ -1,4 +1,6 @@
-from typing import Annotated
+import threading
+from collections import defaultdict
+from typing import Annotated, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -28,15 +30,26 @@ client: httpx.AsyncClient = None
 # 同步 Engine
 engine: Engine = None
 
+# 1. 存储每个 model_name 的下一个索引
+#    defaultdict(int) 会在键不存在时自动创建并赋值为 0
+model_rr_counters = defaultdict(int)
+# 2. 为每个 model_name 提供一个独立的锁，以防止并发访问 rr_counters 时的竞争条件
+#    defaultdict(threading.Lock) 会在键不存在时自动创建一个新的锁
+model_rr_locks = defaultdict(threading.Lock)
+
 
 # --- SQLModel 数据模型 ---
 class ModelRoute(SQLModel, table=True):
     """
     一个 SQLModel 模型，用于存储模型名称到后端 URL 的路由。
-    'model_name' 是主键，确保了唯一性。
+    'id' 是主键，允许 'model_name' 重复以实现负载均衡。
     """
 
-    model_name: str = Field(primary_key=True, index=True)
+    # <--- MODIFIED: 架构变更 --->
+    # 1. 'model_name' 不再是主键。
+    # 2. 我们添加了一个自动递增的 'id' 作为主键。
+    id: Optional[int] = Field(default=None, primary_key=True)
+    model_name: str = Field(index=True)  # 仍然索引 'model_name' 以提高查询速度
     model_url: str
     api_key: str | None = Field(default=None)
     created: datetime = Field(
@@ -75,14 +88,51 @@ def get_all_routes_sync():
 def get_routing_info_sync(model: str):
     """同步地从数据库中查询模型和所有可用模型"""
     with Session(engine) as session:
-        # 1. 获取特定模型
-        db_route = session.get(ModelRoute, model)
+        # <--- MODIFIED: 核心负载均衡逻辑 --->
 
-        # 2. 获取所有可用模型
+        # 1. 获取 *所有* 匹配该模型的路由
+        statement = select(ModelRoute).where(ModelRoute.model_name == model)
+        # .all() 将所有匹配的路由加载到列表中
+        db_routes_list = session.exec(statement).all()
+
+        # 2. 获取所有可用模型名称 (用于错误消息)
         available_models = get_all_model_names_sync()
-        server = db_route.model_url if db_route else None
-        # 3. 获取后端 API 密钥
-        backend_api_key = db_route.api_key if db_route else None
+
+        if not db_routes_list:
+            # 3. 如果列表为空，则未找到模型
+            server = None
+            backend_api_key = None
+        elif len(db_routes_list) == 1:
+            # 4. 优化：如果只有一个，直接返回，无需加锁或计数
+            selected_route = db_routes_list[0]
+            server = selected_route.model_url
+            backend_api_key = selected_route.api_key
+        else:
+            # 5. 轮询 (Round-Robin) 逻辑
+            # 获取此模型的特定锁
+            lock = model_rr_locks[model]
+
+            # 使用 'with' 语句自动获取和释放锁（线程安全）
+            with lock:
+                # 5.1. 获取当前计数器值 (默认为 0)
+                current_index = model_rr_counters[model]
+
+                # 5.2. 计算下一个索引，使用模运算实现循环
+                next_index = (current_index + 1) % len(db_routes_list)
+
+                # 5.3. 更新全局计数器，为 *下一个* 请求做准备
+                model_rr_counters[model] = next_index
+
+            # 5.4. 使用我们在此次请求中获取的 current_index 来选择路由
+            # （在锁之外执行，因为我们已经拿到了索引）
+            selected_route = db_routes_list[current_index]
+
+            server = selected_route.model_url
+            backend_api_key = selected_route.api_key
+
+            logger.debug(
+                f"Round-Robin: model={model}, selected_index={current_index}, total={len(db_routes_list)}"
+            )
 
         return server, available_models, backend_api_key
 
@@ -145,6 +195,9 @@ async def lifespan(app: FastAPI):
         # 捕获任何其他意外的检查错误
         logger.error(f"数据库 schema 检查期间发生意外错误: {e}")
         logger.warning("将尝试继续，但可能会失败。")
+        import traceback
+
+        traceback.print_exc()
     engine = temp_engine
     # ---------- 检查数据库 schema 是否与 SQLModel 定义匹配 ----------
 
@@ -286,19 +339,33 @@ async def _non_stream_proxy(
 async def list_models():
     """
     OpenAI 兼容接口: 列出所有可用的模型。
+    (此函数必须修改以处理重复的模型名称)
     """
     try:
+
+        # 1. 获取所有路由条目
         all_routes: list[ModelRoute] = await run_in_threadpool(get_all_routes_sync)
 
-        models_data = []
+        # 2. 按 model_name 分组，并找到每组中 *最早* 的 created 时间戳
+        models_by_name = {}  # { model_name: earliest_timestamp }
         for route in all_routes:
             created_timestamp = int(route.created.timestamp())
 
+            if route.model_name not in models_by_name:
+                models_by_name[route.model_name] = created_timestamp
+            else:
+                # 更新为更早（更小）的时间戳
+                models_by_name[route.model_name] = min(
+                    models_by_name[route.model_name], created_timestamp
+                )
+
+        # 3. 构建唯一的模型数据列表
+        models_data = []
+        for model_name, created_timestamp in models_by_name.items():
             models_data.append(
                 {
-                    "id": route.model_name,
+                    "id": model_name,
                     "object": "model",
-                    # 3. 使用数据库中的 created 时间戳
                     "created": created_timestamp,
                     "owned_by": "openai_router",
                     "permission": [],
@@ -307,7 +374,9 @@ async def list_models():
 
         response_data = {"object": "list", "data": models_data}
 
-        logger.info(f"Returning {len(all_routes)} available models for /v1/models.")
+        logger.info(
+            f"Returning {len(models_data)} unique available models for /v1/models."
+        )
 
         return response_data
 
@@ -364,17 +433,23 @@ def add_or_update_route_sync(model_name: str, model_url: str, api_key: str | Non
         api_key = None
 
     with Session(engine) as session:
-        db_route = session.get(ModelRoute, model_name)
+        statement = select(ModelRoute).where(
+            ModelRoute.model_name == model_name, ModelRoute.model_url == model_url
+        )
+        db_route = session.exec(statement).first()  # 使用 .first()
 
         if db_route:
-            db_route.model_url = model_url
-            db_route.api_key = api_key  # 更新 API 密钥
-            status_message = f"路由 '{model_name}' 已更新。"
+            # 2. 如果存在，我们只更新 API 密钥
+            db_route.api_key = api_key
+            status_message = f"路由 '{model_name} -> {model_url}' 的 API 密钥已更新。"
         else:
+            # 3. 如果不存在，我们创建一个全新的条目
             db_route = ModelRoute(
                 model_name=model_name, model_url=model_url, api_key=api_key
             )
-            status_message = f"路由 '{model_name}' 已添加。"
+            status_message = (
+                f"新路由 '{model_name} -> {model_url}' 已添加 (用于负载均衡)。"
+            )
 
         session.add(db_route)
         session.commit()
@@ -383,19 +458,27 @@ def add_or_update_route_sync(model_name: str, model_url: str, api_key: str | Non
     return status_message
 
 
-def delete_route_sync(model_name: str):
-    """同步从数据库删除一个路由"""
+def delete_route_sync(model_name: str, model_url: str):  # <--- MODIFIED: 需要 model_url
+    """
+    同步从数据库删除一个 *特定* 的 (model_name, model_url) 路由。
+    """
     status_message = ""
     with Session(engine) as session:
-        db_route = session.get(ModelRoute, model_name)
+        # <--- MODIFIED: 删除逻辑 --->
+        # 1. 寻找一个 (model_name, model_url) 组合的条目
+        statement = select(ModelRoute).where(
+            ModelRoute.model_name == model_name, ModelRoute.model_url == model_url
+        )
+        db_route = session.exec(statement).first()
+        # <--- END MODIFIED --->
 
         if db_route:
             session.delete(db_route)
             session.commit()
-            status_message = f"路由 '{model_name}' 已删除。"
-            logger.info(f"[Admin] Route deleted: {model_name}")
+            status_message = f"路由 '{model_name} -> {model_url}' 已删除。"
+            logger.info(f"[Admin] Route deleted: {model_name} -> {model_url}")
         else:
-            status_message = f"错误: 未找到路由 '{model_name}'。"
+            status_message = f"错误: 未找到路由 '{model_name} -> {model_url}'。"
 
     return status_message
 
@@ -416,12 +499,14 @@ async def add_or_update_route(model_name: str, model_url: str, api_key: str | No
     return status_message, await get_current_routes()
 
 
-async def delete_route(model_name: str):
+async def delete_route(
+    model_name: str, model_url: str
+):  # <--- MODIFIED: 需要 model_url
     """异步调用同步函数删除路由"""
-    if not model_name:
-        return "要删除的模型名称不能为空", await get_current_routes()
+    if not model_name or not model_url:
+        return "要删除的模型名称和 URL 均不能为空", await get_current_routes()
 
-    status_message = await run_in_threadpool(delete_route_sync, model_name)
+    status_message = await run_in_threadpool(delete_route_sync, model_name, model_url)
     return status_message, await get_current_routes()
 
 
@@ -465,7 +550,7 @@ def create_admin_ui():
                         "后端 URL (Backend URL)",
                         "API 密钥 (API Key)",
                     ],
-                    label="当前路由表",
+                    label="当前路由表 (同一模型可有多个URL)",
                     row_count=(1, "fixed"),
                     col_count=(3, "fixed"),
                     interactive=False,
@@ -489,7 +574,7 @@ def create_admin_ui():
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新")
                     delete_button = gr.Button(
-                        "删除",
+                        "删除 (指定URL)",
                         variant="stop",
                     )
 
@@ -505,7 +590,7 @@ def create_admin_ui():
 
         delete_button.click(
             delete_route,
-            inputs=[model_name_input],
+            inputs=[model_name_input, model_url_input],
             outputs=[status_output, routes_datagrid],
         )
 
