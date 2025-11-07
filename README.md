@@ -11,10 +11,10 @@
  
 <p align="center">
 <a href="#"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
-<a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-v0.115+-teal?style=flat-square"></a>
 <a href="https://gradio.app"><img src="https://img.shields.io/badge/Gradio-v5+-orange?style=flat-square"></a>
 <a href="#"><img src="https://img.shields.io/badge/SQLite-内置存储-lightgrey?style=flat-square"></a>
 <a href="https://pypi.org/project/openai-router/"><img  src="https://img.shields.io/pypi/v/openai-router?style=flat-square&logo=pypi&label=PyPI"></a> 
+<a href="https://pypistats.org/packages/openai-router"> <img src="https://img.shields.io/pypi/dm/openai-router?style=flat-square"  alt="PyPI - Downloads"></a>
 </p>
  
 ---
