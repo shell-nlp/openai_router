@@ -1,6 +1,6 @@
 [project]
 name = "openai-router"
-version = "0.1.3"
+version = "0.1.4"
 description = "openai-router"
 readme = "README.md"
 requires-python = ">=3.11"
