@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.120.3",
-    "gradio>=5.49.1",
+    "gradio==5.49.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
     "sqlmodel>=0.0.27",
