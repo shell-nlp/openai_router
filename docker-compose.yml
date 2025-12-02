@@ -7,7 +7,7 @@ services:
     image: openai-router:latest
     container_name: openai-router
     volumes:
-      - ./data/:/app/data/ # 映射模型路径
+      - ./data/:/app/.venv/lib/python3.12/data/ # 映射模型路径
     ports:
       - "8000:8000"
     restart: unless-stopped 
