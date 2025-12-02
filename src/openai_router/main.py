@@ -14,14 +14,18 @@ import typer
 import uvicorn
 import webbrowser
 import time
+from pathlib import Path
 
 # --- 导入 SQLModel 和同步组件 ---
 # 切换到同步 Session 和 Engine
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 from sqlalchemy.engine import Engine  # 导入同步 Engine
 
+BASE_DIR = Path(__file__).absolute().parent.parent.parent
+SQLITE_DB_DIR = BASE_DIR / "data"  # 确保 data 目录存在
+SQLITE_DB_DIR.mkdir(exist_ok=True)  # 自动创建
 # --- 数据库配置 ---
-SQLITE_DB_FILE = "routes.db"
+SQLITE_DB_FILE = str(SQLITE_DB_DIR / "routes.db")
 # 使用同步 SQLite URL
 SQLITE_URL = f"sqlite:///{SQLITE_DB_FILE}"
 
