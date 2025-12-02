@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  openai-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openai-router:latest
+    container_name: openai-router
+    ports:
+      - "8000:8000"
+    restart: unless-stopped 
+    command: openai-router --host 0.0.0.0
+  
