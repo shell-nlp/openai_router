@@ -7,7 +7,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlmodel import SQLModel, create_engine
 
 from openai_router.config import SQLITE_DB_FILE, SQLITE_URL
-from openai_router.models import ModelRoute
+from openai_router.models import BackendSource, ModelRoute
 from openai_router.runtime import runtime_state
 
 
@@ -41,29 +41,34 @@ def _rebuild_database_if_schema_changed(engine: Engine) -> Engine:
             logger.info("Database or table '{}' not found. A new database will be created.", ModelRoute.__tablename__)
             return engine
 
-        actual_columns = {
-            column["name"] for column in inspector.get_columns(ModelRoute.__tablename__)
-        }
-        expected_columns = {column.name for column in ModelRoute.__table__.columns}
+        for table_model in (ModelRoute, BackendSource):
+            if not inspector.has_table(table_model.__tablename__):
+                continue
 
-        if actual_columns == expected_columns:
-            return engine
+            actual_columns = {
+                column["name"] for column in inspector.get_columns(table_model.__tablename__)
+            }
+            expected_columns = {column.name for column in table_model.__table__.columns}
 
-        logger.warning(
-            "Database schema mismatch detected. expected={}, actual={}",
-            expected_columns,
-            actual_columns,
-        )
-        logger.warning("Removing outdated database file {} to rebuild.", SQLITE_DB_FILE)
+            if actual_columns == expected_columns:
+                continue
 
-        engine.dispose()
-        try:
-            os.remove(SQLITE_DB_FILE)
-            logger.info("Removed outdated database: {}", SQLITE_DB_FILE)
-        except OSError as exc:
-            logger.error("Failed to remove database {}: {}", SQLITE_DB_FILE, exc)
+            logger.warning(
+                "Database schema mismatch detected for {}. expected={}, actual={}",
+                table_model.__tablename__,
+                expected_columns,
+                actual_columns,
+            )
+            logger.warning("Removing outdated database file {} to rebuild.", SQLITE_DB_FILE)
 
-        return create_engine(SQLITE_URL, echo=False)
+            engine.dispose()
+            try:
+                os.remove(SQLITE_DB_FILE)
+                logger.info("Removed outdated database: {}", SQLITE_DB_FILE)
+            except OSError as exc:
+                logger.error("Failed to remove database {}: {}", SQLITE_DB_FILE, exc)
+
+            return create_engine(SQLITE_URL, echo=False)
     except (OperationalError, DBAPIError):
         logger.info("Database or table 'modelroute' not found. A new database will be created.")
     except Exception as exc:
