@@ -47,6 +47,8 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
     server, available_models, backend_api_key, routed_model_name = await run_in_threadpool(
         route_service.get_routing_target,
         model_name,
+        json_body,
+        dict(request.headers),
     )
     if server is None:
         raise HTTPException(
