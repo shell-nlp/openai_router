@@ -16,12 +16,14 @@ class RouteServiceTest(unittest.TestCase):
 
     @patch("openai_router.services.repositories.list_model_names")
     @patch("openai_router.services.repositories.list_alias_names")
+    @patch("openai_router.services.repositories.get_router_setting")
     @patch("openai_router.services.repositories.get_alias")
     @patch("openai_router.services.repositories.list_routes_by_model")
     def test_get_routing_target_round_robin(
         self,
         mock_list_routes_by_model,
         mock_get_alias,
+        mock_get_router_setting,
         mock_list_alias_names,
         mock_list_model_names,
     ) -> None:
@@ -30,6 +32,7 @@ class RouteServiceTest(unittest.TestCase):
             ModelRoute(model_name="gpt-4", model_url="http://backend-2/v1", api_key="key-2"),
         ]
         mock_get_alias.return_value = None
+        mock_get_router_setting.return_value = None
         mock_list_alias_names.return_value = []
         mock_list_model_names.return_value = ["gpt-4", "gpt-4"]
 
@@ -41,12 +44,14 @@ class RouteServiceTest(unittest.TestCase):
 
     @patch("openai_router.services.repositories.list_model_names")
     @patch("openai_router.services.repositories.list_alias_names")
+    @patch("openai_router.services.repositories.get_router_setting")
     @patch("openai_router.services.repositories.get_alias")
     @patch("openai_router.services.repositories.list_routes_by_model")
     def test_get_routing_target_resolves_alias(
         self,
         mock_list_routes_by_model,
         mock_get_alias,
+        mock_get_router_setting,
         mock_list_alias_names,
         mock_list_model_names,
     ) -> None:
@@ -55,6 +60,7 @@ class RouteServiceTest(unittest.TestCase):
             [ModelRoute(model_name="gpt-4", model_url="http://backend-1/v1", api_key="key-1")],
         ]
         mock_get_alias.return_value = type("Alias", (), {"model_name": "gpt-4"})()
+        mock_get_router_setting.return_value = None
         mock_list_alias_names.return_value = ["gpt-4o-latest"]
         mock_list_model_names.return_value = ["gpt-4"]
 
@@ -64,6 +70,77 @@ class RouteServiceTest(unittest.TestCase):
             resolved,
             ("http://backend-1/v1", ["gpt-4", "gpt-4o-latest"], "key-1", "gpt-4"),
         )
+
+    @patch("openai_router.services.repositories.list_model_names")
+    @patch("openai_router.services.repositories.list_alias_names")
+    @patch("openai_router.services.repositories.get_router_setting")
+    @patch("openai_router.services.repositories.get_alias")
+    @patch("openai_router.services.repositories.list_routes_by_model")
+    def test_get_routing_target_uses_consistent_hash_for_same_session(
+        self,
+        mock_list_routes_by_model,
+        mock_get_alias,
+        mock_get_router_setting,
+        mock_list_alias_names,
+        mock_list_model_names,
+    ) -> None:
+        mock_list_routes_by_model.return_value = [
+            ModelRoute(model_name="gpt-4", model_url="http://backend-1/v1", api_key="key-1"),
+            ModelRoute(model_name="gpt-4", model_url="http://backend-2/v1", api_key="key-2"),
+            ModelRoute(model_name="gpt-4", model_url="http://backend-3/v1", api_key="key-3"),
+        ]
+        mock_get_alias.return_value = None
+        mock_get_router_setting.return_value = type(
+            "Setting",
+            (),
+            {"routing_policy": "consistent_hash"},
+        )()
+        mock_list_alias_names.return_value = []
+        mock_list_model_names.return_value = ["gpt-4"]
+
+        first = self.service.get_routing_target(
+            "gpt-4",
+            {"model": "gpt-4", "messages": [], "user": "user-1"},
+            {"x-session-id": "session-123"},
+        )
+        second = self.service.get_routing_target(
+            "gpt-4",
+            {"model": "gpt-4", "messages": [], "user": "user-2"},
+            {"x-session-id": "session-123"},
+        )
+        third = self.service.get_routing_target(
+            "gpt-4",
+            {"model": "gpt-4", "messages": [], "user": "user-3"},
+            {"x-session-id": "session-456"},
+        )
+
+        self.assertEqual(first[0], second[0])
+        self.assertEqual(first[2], second[2])
+        self.assertIn(third[0], {first[0], "http://backend-2/v1", "http://backend-3/v1"})
+
+    def test_extract_hash_key_prefers_headers_over_body(self) -> None:
+        hash_key = self.service._extract_hash_key(
+            {
+                "model": "gpt-4",
+                "user": "body-user",
+                "session_params": {"session_id": "body-session"},
+            },
+            {"x-user-id": "header-user"},
+        )
+
+        self.assertEqual(hash_key, "header:x-user-id:header-user")
+
+    def test_extract_hash_key_uses_nested_session_id_before_user(self) -> None:
+        hash_key = self.service._extract_hash_key(
+            {
+                "model": "gpt-4",
+                "user": "body-user",
+                "session_params": {"session_id": "body-session"},
+            },
+            None,
+        )
+
+        self.assertEqual(hash_key, "session:body-session")
 
     @patch("openai_router.services.repositories.list_routes")
     @patch("openai_router.services.repositories.list_model_aliases")
@@ -140,10 +217,12 @@ class RouteServiceTest(unittest.TestCase):
         self.assertEqual(models, ["gpt-4", "text-embedding-3-large"])
 
     @patch.object(RouteService, "sync_backend_source")
+    @patch("openai_router.services.repositories.replace_source_model_exclusions")
     @patch("openai_router.services.repositories.upsert_backend_source")
-    def test_add_or_update_route_auto_discovers_models(
+    def test_add_or_update_backend_source_syncs_models(
         self,
         mock_upsert_backend_source,
+        mock_replace_source_model_exclusions,
         mock_sync_backend_source,
     ) -> None:
         source = BackendSource(
@@ -153,6 +232,7 @@ class RouteServiceTest(unittest.TestCase):
             sync_interval_minutes=15,
         )
         mock_upsert_backend_source.return_value = (True, source)
+        mock_replace_source_model_exclusions.return_value = (2, 0)
         mock_sync_backend_source.return_value = {
             "discovered": 2,
             "created": 2,
@@ -160,12 +240,11 @@ class RouteServiceTest(unittest.TestCase):
             "deleted": 0,
         }
 
-        message = self.service.add_or_update_route(
-            "",
-            "",
+        message = self.service.add_or_update_backend_source(
             "http://localhost:8000/v1/",
             "sk-test",
-            auto_discover_models=True,
+            "unknown, test-model",
+            15,
         )
 
         mock_upsert_backend_source.assert_called_once_with(
@@ -173,8 +252,13 @@ class RouteServiceTest(unittest.TestCase):
             "sk-test",
             15,
         )
+        mock_replace_source_model_exclusions.assert_called_once_with(
+            1,
+            ["unknown", "test-model"],
+        )
         mock_sync_backend_source.assert_called_once_with(source)
         self.assertIn("同步间隔 15 分钟", message)
+        self.assertIn("排除模型 2 个", message)
         self.assertIn("本次同步发现 2 个模型", message)
 
     @patch("openai_router.services.repositories.replace_model_aliases")
@@ -208,6 +292,18 @@ class RouteServiceTest(unittest.TestCase):
             ["gpt-4o-latest", "my-gpt4"],
         )
         self.assertIn("别名 2 个已同步", message)
+
+    @patch("openai_router.services.repositories.delete_backend_source")
+    def test_delete_backend_source_returns_cleanup_message(
+        self,
+        mock_delete_backend_source,
+    ) -> None:
+        mock_delete_backend_source.return_value = True
+
+        message = self.service.delete_backend_source("http://backend/v1/")
+
+        mock_delete_backend_source.assert_called_once_with("http://backend/v1")
+        self.assertIn("自动同步生成的路由", message)
 
     @patch("openai_router.services.repositories.get_alias")
     @patch("openai_router.services.repositories.model_has_routes")

@@ -41,3 +41,22 @@ class ModelAlias(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class RouterSetting(SQLModel, table=True):
+    id: int | None = Field(default=1, primary_key=True)
+    routing_policy: str = Field(default="round_robin", nullable=False)
+    updated: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class SourceModelExclusion(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    source_id: int = Field(foreign_key="backendsource.id", index=True)
+    model_name: str = Field(index=True)
+    created: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

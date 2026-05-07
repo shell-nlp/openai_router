@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from openai_router.db import get_engine
-from openai_router.models import BackendSource, ModelAlias, ModelRoute
+from openai_router.models import (
+    BackendSource,
+    ModelAlias,
+    ModelRoute,
+    RouterSetting,
+    SourceModelExclusion,
+)
 
 
 def list_model_names() -> list[str]:
@@ -35,6 +41,26 @@ def list_backend_sources() -> list[BackendSource]:
     with Session(get_engine()) as session:
         statement = select(BackendSource)
         return list(session.exec(statement).all())
+
+
+def get_router_setting() -> RouterSetting | None:
+    with Session(get_engine()) as session:
+        return session.get(RouterSetting, 1)
+
+
+def upsert_router_setting(routing_policy: str) -> RouterSetting:
+    with Session(get_engine()) as session:
+        setting = session.get(RouterSetting, 1)
+        if setting is None:
+            setting = RouterSetting(id=1, routing_policy=routing_policy)
+        else:
+            setting.routing_policy = routing_policy
+            setting.updated = datetime.now(timezone.utc)
+
+        session.add(setting)
+        session.commit()
+        session.refresh(setting)
+        return setting
 
 
 def list_routes_by_model(model_name: str) -> list[ModelRoute]:
@@ -143,6 +169,12 @@ def upsert_route(model_name: str, model_url: str, api_key: str | None) -> tuple[
             route.auto_managed = False
             route.source_id = None
 
+        source = session.exec(
+            select(BackendSource).where(BackendSource.model_url == model_url)
+        ).first()
+        if source is not None:
+            _delete_source_model_exclusion(session, source.id, model_name)
+
         session.add(route)
         session.commit()
         session.refresh(route)
@@ -224,6 +256,81 @@ def replace_model_aliases(model_name: str, alias_names: list[str]) -> tuple[int,
     return created_count, updated_count, deleted_count
 
 
+def list_excluded_model_names(source_id: int) -> list[str]:
+    with Session(get_engine()) as session:
+        statement = select(SourceModelExclusion.model_name).where(
+            SourceModelExclusion.source_id == source_id
+        )
+        return list(session.exec(statement).all())
+
+
+def replace_source_model_exclusions(source_id: int, model_names: list[str]) -> tuple[int, int]:
+    created_count = 0
+    deleted_count = 0
+    desired_model_names = set(model_names)
+
+    with Session(get_engine()) as session:
+        existing_exclusions = {
+            exclusion.model_name: exclusion
+            for exclusion in session.exec(
+                select(SourceModelExclusion).where(SourceModelExclusion.source_id == source_id)
+            ).all()
+        }
+
+        for model_name in model_names:
+            if model_name in existing_exclusions:
+                continue
+            session.add(SourceModelExclusion(source_id=source_id, model_name=model_name))
+            created_count += 1
+
+        for model_name, exclusion in existing_exclusions.items():
+            if model_name in desired_model_names:
+                continue
+            session.delete(exclusion)
+            deleted_count += 1
+
+        session.commit()
+
+    return created_count, deleted_count
+
+
+def delete_backend_source(model_url: str) -> bool:
+    with Session(get_engine()) as session:
+        source = session.exec(
+            select(BackendSource).where(BackendSource.model_url == model_url)
+        ).first()
+        if source is None:
+            return False
+
+        source_routes = session.exec(
+            select(ModelRoute).where(ModelRoute.source_id == source.id)
+        ).all()
+        affected_model_names = {route.model_name for route in source_routes}
+        for route in source_routes:
+            session.delete(route)
+
+        exclusions = session.exec(
+            select(SourceModelExclusion).where(SourceModelExclusion.source_id == source.id)
+        ).all()
+        for exclusion in exclusions:
+            session.delete(exclusion)
+
+        session.delete(source)
+
+        for model_name in affected_model_names:
+            remaining_route = session.exec(
+                select(ModelRoute).where(ModelRoute.model_name == model_name)
+            ).first()
+            if remaining_route is None:
+                for alias in session.exec(
+                    select(ModelAlias).where(ModelAlias.model_name == model_name)
+                ).all():
+                    session.delete(alias)
+
+        session.commit()
+        return True
+
+
 def sync_auto_managed_routes(
     source_id: int,
     model_names: list[str],
@@ -247,9 +354,20 @@ def sync_auto_managed_routes(
             route.model_name: route
             for route in session.exec(backend_routes_statement).all()
         }
-        desired_model_names = set(model_names)
+        excluded_model_names = set(
+            session.exec(
+                select(SourceModelExclusion.model_name).where(
+                    SourceModelExclusion.source_id == source_id
+                )
+            ).all()
+        )
+        desired_model_names = {
+            model_name for model_name in model_names if model_name not in excluded_model_names
+        }
 
         for model_name in model_names:
+            if model_name in excluded_model_names:
+                continue
             route = existing_routes.get(model_name) or backend_routes.get(model_name)
             if route is None:
                 route = ModelRoute(
@@ -303,6 +421,9 @@ def delete_route(model_name: str, model_url: str) -> bool:
         if route is None:
             return False
 
+        if route.auto_managed and route.source_id is not None:
+            _ensure_source_model_exclusion(session, route.source_id, route.model_name)
+
         session.delete(route)
         remaining_route = session.exec(
             select(ModelRoute).where(
@@ -317,6 +438,36 @@ def delete_route(model_name: str, model_url: str) -> bool:
                 session.delete(alias)
         session.commit()
         return True
+
+
+def _ensure_source_model_exclusion(
+    session: Session,
+    source_id: int,
+    model_name: str,
+) -> None:
+    existing = session.exec(
+        select(SourceModelExclusion).where(
+            SourceModelExclusion.source_id == source_id,
+            SourceModelExclusion.model_name == model_name,
+        )
+    ).first()
+    if existing is None:
+        session.add(SourceModelExclusion(source_id=source_id, model_name=model_name))
+
+
+def _delete_source_model_exclusion(
+    session: Session,
+    source_id: int,
+    model_name: str,
+) -> None:
+    exclusion = session.exec(
+        select(SourceModelExclusion).where(
+            SourceModelExclusion.source_id == source_id,
+            SourceModelExclusion.model_name == model_name,
+        )
+    ).first()
+    if exclusion is not None:
+        session.delete(exclusion)
 
 
 def unique_model_names(names: Iterable[str]) -> list[str]:
