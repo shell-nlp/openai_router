@@ -161,26 +161,112 @@ def on_select_backend_source(
     return model_url, "", excluded_models, sync_interval
 
 
+async def get_overview_data() -> tuple[str, str, str, str]:
+    routes = await get_current_routes()
+    sources = await get_current_backend_sources()
+    routing_policy = await get_current_routing_policy()
+
+    manual_routes = sum(1 for route in routes if len(route) > 4 and route[4] == "手动配置")
+    auto_routes = sum(1 for route in routes if len(route) > 4 and route[4] == "自动同步")
+    source_errors = sum(1 for source in sources if len(source) > 4 and str(source[4]).strip() not in {"", "-"})
+
+    route_summary = f"共 {len(routes)} 条，手动 {manual_routes} 条，自动 {auto_routes} 条"
+    source_summary = f"共 {len(sources)} 个，异常 {source_errors} 个"
+    return get_router_base_url(), route_summary, source_summary, routing_policy
+
+
+async def add_or_update_route_page(
+    model_name: str,
+    aliases_text: str | None,
+    model_url: str,
+    api_key: str | None,
+) -> tuple[str, list[list[str]]]:
+    status_message, routes, _ = await add_or_update_route(
+        model_name,
+        aliases_text,
+        model_url,
+        api_key,
+    )
+    return status_message, routes
+
+
+async def delete_route_page(
+    model_name: str,
+    model_url: str,
+) -> tuple[str, list[list[str]]]:
+    status_message, routes, _ = await delete_route(model_name, model_url)
+    return status_message, routes
+
+
+async def add_or_update_backend_source_page(
+    model_url: str,
+    api_key: str | None,
+    excluded_models_text: str | None,
+    sync_interval_minutes: float | None,
+) -> tuple[str, list[list[str]]]:
+    status_message, _, sources = await add_or_update_backend_source(
+        model_url,
+        api_key,
+        excluded_models_text,
+        sync_interval_minutes,
+    )
+    return status_message, sources
+
+
+async def sync_backend_source_page(
+    model_url: str,
+) -> tuple[str, list[list[str]]]:
+    status_message, _, sources = await sync_backend_source(model_url)
+    return status_message, sources
+
+
+async def delete_backend_source_page(
+    model_url: str,
+) -> tuple[str, list[list[str]]]:
+    status_message, _, sources = await delete_backend_source(model_url)
+    return status_message, sources
+
+
+async def get_backend_config_page_data() -> tuple[str, list[list[str]], str]:
+    return (
+        await get_current_backend_sources(),
+        await get_current_routing_policy(),
+    )
+
+
+def _render_page_header(
+    title: str,
+    description: str,
+) -> gr.Textbox:
+    gr.Markdown(f"## {title}")
+    base_url_output = gr.Textbox(
+        label="当前路由后的 Base URL",
+        value="服务启动后可用",
+        interactive=False,
+    )
+    gr.Markdown(description)
+    return base_url_output
+
+
 def create_admin_ui() -> gr.Blocks:
     with gr.Blocks(title="模型路由管理器") as admin_ui:
+        gr.Navbar(main_page_name="模型路由")
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
-        router_base_url_output = gr.Textbox(
-            label="当前路由后的 Base URL",
-            value="服务启动后可用",
-            interactive=False,
-        )
-        gr.Markdown(
+        overview_base_url_output = _render_page_header(
+            "模型路由",
             """**将不同端口、不同服务的`openAI`接口通过统一的 URL 进行路由！兼容 `vLLM`、`SGLang`、`lmdeploy`、`Ollama` 等。**\n
-**注意：** 手动模型路由与“自动从 `/v1/models` 导入”的后端源已拆分为两个独立管理区。"""
+**已拆分为多页管理：** 模型路由、后端配置。""",
         )
-
         with gr.Row():
-            refresh_button = gr.Button("刷新全部")
+            route_summary_output = gr.Textbox(label="模型路由概况", interactive=False)
+            source_summary_output = gr.Textbox(label="后端配置概况", interactive=False)
+            routing_policy_summary_output = gr.Textbox(label="当前路由策略", interactive=False)
+        refresh_overview_button = gr.Button("刷新概览")
 
-        status_output = gr.Textbox(
+        routes_status_output = gr.Textbox(
             label="操作状态",
             interactive=False,
-            value="这里用于显示上一次的操作状态",
+            value="这里用于显示上一次的路由操作状态",
         )
 
         with gr.Row():
@@ -201,19 +287,6 @@ def create_admin_ui() -> gr.Blocks:
                     interactive=False,
                 )
             with gr.Column(scale=1):
-                gr.Markdown("### 路由策略")
-                routing_policy_input = gr.Dropdown(
-                    label="路由策略",
-                    choices=["round_robin", "consistent_hash"],
-                    value="round_robin",
-                    info=(
-                        "consistent_hash 会优先使用 X-Session-ID / X-User-ID 等请求头，"
-                        "其次使用 session_params.session_id、user、session_id、user_id，"
-                        "将同一会话稳定路由到同一后端。"
-                    ),
-                )
-                save_policy_button = gr.Button("保存路由策略")
-                gr.Markdown("### 管理手动路由")
                 model_name_input = gr.Textbox(label="模型名称", value="gpt4")
                 aliases_input = gr.Textbox(
                     label="模型别名",
@@ -229,10 +302,75 @@ def create_admin_ui() -> gr.Blocks:
                     info="如果提供，路由器将使用此密钥覆盖原始请求中的 Authorization 标头。如果留空，将透传原始请求的密钥。",
                     type="password",
                 )
-                gr.Markdown("当前区域仅管理手动路由；自动导入后端源请在下方单独维护。")
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新路由")
                     delete_button = gr.Button("删除路由", variant="stop")
+
+        admin_ui.load(
+            get_overview_data,
+            outputs=[
+                overview_base_url_output,
+                route_summary_output,
+                source_summary_output,
+                routing_policy_summary_output,
+            ],
+        )
+        refresh_overview_button.click(
+            get_overview_data,
+            outputs=[
+                overview_base_url_output,
+                route_summary_output,
+                source_summary_output,
+                routing_policy_summary_output,
+            ],
+        )
+        admin_ui.load(get_current_routes, outputs=routes_datagrid)
+        refresh_overview_button.click(
+            get_current_routes,
+            outputs=routes_datagrid,
+        )
+        add_update_button.click(
+            add_or_update_route_page,
+            inputs=[
+                model_name_input,
+                aliases_input,
+                model_url_input,
+                route_api_key_input,
+            ],
+            outputs=[routes_status_output, routes_datagrid],
+        )
+        delete_button.click(
+            delete_route_page,
+            inputs=[model_name_input, model_url_input],
+            outputs=[routes_status_output, routes_datagrid],
+        )
+        routes_datagrid.select(
+            on_select_route,
+            inputs=[routes_datagrid],
+            outputs=[model_name_input, aliases_input, model_url_input, route_api_key_input],
+        )
+
+    with admin_ui.route("后端配置", "/sources") as sources_page:
+        gr.Navbar(main_page_name="模型路由")
+        gr.Markdown("## 后端配置")
+        gr.Markdown("当前页面用于管理全局路由策略和自动同步后端源。保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。")
+        sources_status_output = gr.Textbox(
+            label="操作状态",
+            interactive=False,
+            value="这里用于显示上一次的后端配置操作状态",
+        )
+        gr.Markdown("### 路由策略")
+        routing_policy_input = gr.Dropdown(
+            label="路由策略",
+            choices=["round_robin", "consistent_hash"],
+            value="round_robin",
+            info=(
+                "consistent_hash 会优先使用 X-Session-ID / X-User-ID 等请求头，"
+                "其次使用 session_params.session_id、user、session_id、user_id，"
+                "将同一会话稳定路由到同一后端。"
+            ),
+        )
+        save_policy_button = gr.Button("保存路由策略")
 
         with gr.Row():
             with gr.Column(scale=2):
@@ -245,13 +383,13 @@ def create_admin_ui() -> gr.Blocks:
                         "最后错误 (Last Error)",
                         "排除模型 (Excluded Models)",
                     ],
-                    label="自动同步后端源",
+                        label="后端配置",
                     row_count=1,
                     column_count=6,
                     interactive=False,
                 )
             with gr.Column(scale=1):
-                gr.Markdown("### 管理自动同步后端源")
+                gr.Markdown("### 自动同步后端源")
                 source_url_input = gr.Textbox(
                     label="后端源 URL",
                     value="http://localhost:8082",
@@ -270,65 +408,39 @@ def create_admin_ui() -> gr.Blocks:
                     value=15,
                     minimum=1,
                     precision=0,
-                    info="保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。",
                 )
                 gr.Markdown("删除后端源时，会一并清理该后端源自动生成的路由；手动路由不会受影响。")
                 with gr.Row():
-                    add_update_source_button = gr.Button("添加 / 更新后端源")
+                    add_update_source_button = gr.Button("添加 / 更新后端配置")
                     sync_source_button = gr.Button("立即同步")
-                    delete_source_button = gr.Button("删除后端源", variant="stop")
+                    delete_source_button = gr.Button("删除后端配置", variant="stop")
 
-        admin_ui.load(get_router_base_url, outputs=router_base_url_output)
-        admin_ui.load(get_current_routing_policy, outputs=routing_policy_input)
-        admin_ui.load(refresh_admin_tables, outputs=[routes_datagrid, backend_sources_datagrid])
-        refresh_button.click(
-            refresh_admin_tables,
-            outputs=[routes_datagrid, backend_sources_datagrid],
-        )
-        save_policy_button.click(
-            update_routing_policy,
-            inputs=[routing_policy_input],
-            outputs=[status_output],
-        )
-        add_update_button.click(
-            add_or_update_route,
-            inputs=[
-                model_name_input,
-                aliases_input,
-                model_url_input,
-                route_api_key_input,
+        sources_page.load(
+            get_backend_config_page_data,
+            outputs=[
+                backend_sources_datagrid,
+                routing_policy_input,
             ],
-            outputs=[status_output, routes_datagrid, backend_sources_datagrid],
-        )
-        delete_button.click(
-            delete_route,
-            inputs=[model_name_input, model_url_input],
-            outputs=[status_output, routes_datagrid, backend_sources_datagrid],
         )
         add_update_source_button.click(
-            add_or_update_backend_source,
+            add_or_update_backend_source_page,
             inputs=[
                 source_url_input,
                 source_api_key_input,
                 source_excluded_models_input,
                 sync_interval_minutes_input,
             ],
-            outputs=[status_output, routes_datagrid, backend_sources_datagrid],
+            outputs=[sources_status_output, backend_sources_datagrid],
         )
         sync_source_button.click(
-            sync_backend_source,
+            sync_backend_source_page,
             inputs=[source_url_input],
-            outputs=[status_output, routes_datagrid, backend_sources_datagrid],
+            outputs=[sources_status_output, backend_sources_datagrid],
         )
         delete_source_button.click(
-            delete_backend_source,
+            delete_backend_source_page,
             inputs=[source_url_input],
-            outputs=[status_output, routes_datagrid, backend_sources_datagrid],
-        )
-        routes_datagrid.select(
-            on_select_route,
-            inputs=[routes_datagrid],
-            outputs=[model_name_input, aliases_input, model_url_input, route_api_key_input],
+            outputs=[sources_status_output, backend_sources_datagrid],
         )
         backend_sources_datagrid.select(
             on_select_backend_source,
@@ -339,6 +451,11 @@ def create_admin_ui() -> gr.Blocks:
                 source_excluded_models_input,
                 sync_interval_minutes_input,
             ],
+        )
+        save_policy_button.click(
+            update_routing_policy,
+            inputs=[routing_policy_input],
+            outputs=[sources_status_output],
         )
 
     return admin_ui
