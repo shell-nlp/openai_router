@@ -421,9 +421,6 @@ def delete_route(model_name: str, model_url: str) -> bool:
         if route is None:
             return False
 
-        if route.auto_managed and route.source_id is not None:
-            _ensure_source_model_exclusion(session, route.source_id, route.model_name)
-
         session.delete(route)
         remaining_route = session.exec(
             select(ModelRoute).where(
@@ -438,21 +435,6 @@ def delete_route(model_name: str, model_url: str) -> bool:
                 session.delete(alias)
         session.commit()
         return True
-
-
-def _ensure_source_model_exclusion(
-    session: Session,
-    source_id: int,
-    model_name: str,
-) -> None:
-    existing = session.exec(
-        select(SourceModelExclusion).where(
-            SourceModelExclusion.source_id == source_id,
-            SourceModelExclusion.model_name == model_name,
-        )
-    ).first()
-    if existing is None:
-        session.add(SourceModelExclusion(source_id=source_id, model_name=model_name))
 
 
 def _delete_source_model_exclusion(

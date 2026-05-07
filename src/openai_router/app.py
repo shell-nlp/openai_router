@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
-from openai_router.admin import create_admin_ui
+from openai_router.admin import ADMIN_CSS, create_admin_ui
 from openai_router.db import create_db_and_tables, dispose_engine, initialize_engine
 from openai_router.proxy import non_stream_proxy, resolve_route_request, stream_proxy
 from openai_router.runtime import runtime_state
@@ -106,7 +106,7 @@ def create_app() -> FastAPI:
         )
 
     admin_interface = create_admin_ui()
-    return gr.mount_gradio_app(app, admin_interface, path="/")
+    return gr.mount_gradio_app(app, admin_interface, path="/", css=ADMIN_CSS)
 
 
 app = create_app()
