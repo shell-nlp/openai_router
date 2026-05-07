@@ -267,15 +267,22 @@ class RouteService:
     ) -> bool:
         if source.last_synced_at is None:
             return True
-        return now - source.last_synced_at >= timedelta(minutes=source.sync_interval_minutes)
+        last_synced_at = RouteService._ensure_utc_datetime(source.last_synced_at)
+        current_time = RouteService._ensure_utc_datetime(now)
+        return current_time - last_synced_at >= timedelta(minutes=source.sync_interval_minutes)
 
     @staticmethod
     def _format_datetime(value: datetime | None) -> str:
         if value is None:
             return "-"
+        value = RouteService._ensure_utc_datetime(value)
+        return value.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    @staticmethod
+    def _ensure_utc_datetime(value: datetime) -> datetime:
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 route_service = RouteService()

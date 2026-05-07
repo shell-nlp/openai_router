@@ -10,6 +10,7 @@ class RuntimeState:
         self.client: Optional[httpx.AsyncClient] = None
         self.engine: Optional[Engine] = None
         self.sync_task: Optional[asyncio.Task] = None
+        self.public_base_url: Optional[str] = None
 
 
 runtime_state = RuntimeState()

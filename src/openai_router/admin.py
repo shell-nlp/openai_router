@@ -2,11 +2,16 @@ import gradio as gr
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
 
+from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
 
 async def get_current_routes() -> list[list[str]]:
     return await run_in_threadpool(route_service.get_admin_routes)
+
+
+def get_router_base_url() -> str:
+    return runtime_state.public_base_url or "服务启动后可用"
 
 
 async def add_or_update_route(
@@ -83,6 +88,11 @@ def create_admin_ui() -> gr.Blocks:
         css="footer {display: none !important}",
     ) as admin_ui:
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
+        router_base_url_output = gr.Textbox(
+            label="当前路由后的 Base URL",
+            value="服务启动后可用",
+            interactive=False,
+        )
         gr.Markdown(
             """**将不同端口、不同服务的`openAI`接口通过统一的 URL 进行路由！兼容 `vLLM`、`SGLang`、`lmdeploy`、`Ollama` 等。**\n
 **注意：** 所有路由配置都持久化到 `routes.db` 数据库中。开启“自动从 `/v1/models` 导入模型”后，可直接根据后端模型列表批量生成路由。"""
@@ -142,6 +152,7 @@ def create_admin_ui() -> gr.Blocks:
                     add_update_button = gr.Button("添加 / 更新")
                     delete_button = gr.Button("删除 (指定URL)", variant="stop")
 
+        admin_ui.load(get_router_base_url, outputs=router_base_url_output)
         admin_ui.load(get_current_routes, outputs=routes_datagrid)
         refresh_button.click(get_current_routes, outputs=routes_datagrid)
         add_update_button.click(
