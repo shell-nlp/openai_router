@@ -13,16 +13,32 @@ async def add_or_update_route(
     model_name: str,
     model_url: str,
     api_key: str | None,
+    auto_discover_models: bool,
+    sync_interval_minutes: float | None,
 ) -> tuple[str, list[list[str]]]:
-    if not model_name or not model_name.strip() or not model_url or not model_url.strip():
-        return "模型名称和 URL 不能为空", await get_current_routes()
+    if not model_url or not model_url.strip():
+        return "后端 URL 不能为空", await get_current_routes()
+    if (
+        not auto_discover_models
+        and (not model_name or not model_name.strip())
+    ):
+        return "关闭自动导入时，模型名称不能为空", await get_current_routes()
+    normalized_sync_interval = int(sync_interval_minutes or 15)
+    if normalized_sync_interval < 1:
+        return "自动同步间隔必须大于等于 1 分钟", await get_current_routes()
 
-    status_message = await run_in_threadpool(
-        route_service.add_or_update_route,
-        model_name,
-        model_url,
-        api_key,
-    )
+    try:
+        status_message = await run_in_threadpool(
+            route_service.add_or_update_route,
+            model_name,
+            model_url,
+            api_key,
+            auto_discover_models,
+            normalized_sync_interval,
+        )
+    except ValueError as exc:
+        return str(exc), await get_current_routes()
+
     return status_message, await get_current_routes()
 
 
@@ -44,6 +60,23 @@ def on_select_route(routes_data: pd.DataFrame, evt: gr.SelectData) -> tuple[str,
     return model_name, model_url, ""
 
 
+def toggle_auto_discover_ui(enabled: bool):
+    model_update = gr.update(
+        interactive=not enabled,
+        value="" if enabled else "gpt4",
+        placeholder="开启自动导入时无需填写" if enabled else None,
+    )
+    interval_update = gr.update(interactive=enabled, value=15)
+    hint_update = gr.update(
+        value=(
+            "已开启自动导入：保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。"
+            if enabled
+            else "当前为手动模式：需要填写具体模型名称。"
+        )
+    )
+    return model_update, interval_update, hint_update
+
+
 def create_admin_ui() -> gr.Blocks:
     with gr.Blocks(
         title="模型路由管理器",
@@ -51,8 +84,8 @@ def create_admin_ui() -> gr.Blocks:
     ) as admin_ui:
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
         gr.Markdown(
-            """**将不同端口、不同服务的`openAI`的接口通过统一的url进行路由！兼容 `vLLM`、`SGLang`、`lmdeoply`、`Ollama`等。**\n
-**注意：** 所有路由配置都持久化到 `routes.db` 数据库中。您需要手动添加初始路由。"""
+            """**将不同端口、不同服务的`openAI`接口通过统一的 URL 进行路由！兼容 `vLLM`、`SGLang`、`lmdeploy`、`Ollama` 等。**\n
+**注意：** 所有路由配置都持久化到 `routes.db` 数据库中。开启“自动从 `/v1/models` 导入模型”后，可直接根据后端模型列表批量生成路由。"""
         )
 
         with gr.Row():
@@ -65,10 +98,13 @@ def create_admin_ui() -> gr.Blocks:
                         "模型名称 (Model Name)",
                         "后端 URL (Backend URL)",
                         "API 密钥 (API Key)",
+                        "管理方式 (Mode)",
+                        "同步间隔 (Min)",
+                        "最后同步 (UTC)",
                     ],
-                    label="当前路由表 (同一模型可有多个URL)",
+                    label="当前路由表",
                     row_count=(1, "fixed"),
-                    col_count=(3, "fixed"),
+                    col_count=(6, "fixed"),
                     interactive=False,
                 )
             with gr.Column(scale=1):
@@ -88,6 +124,20 @@ def create_admin_ui() -> gr.Blocks:
                     info="如果提供，路由器将使用此密钥覆盖原始请求中的 Authorization 标头。如果留空，将透传原始请求的密钥。",
                     type="password",
                 )
+                auto_discover_models_input = gr.Checkbox(
+                    label="自动从 /v1/models 导入模型",
+                    info="启用后将忽略上方“模型名称”输入，并从后端拉取模型列表批量写入路由。",
+                    value=False,
+                )
+                sync_interval_minutes_input = gr.Number(
+                    label="自动同步间隔（分钟）",
+                    value=15,
+                    minimum=1,
+                    precision=0,
+                    interactive=False,
+                    info="仅在启用自动导入时生效，默认每 15 分钟同步一次 `/v1/models`。",
+                )
+                auto_discover_hint = gr.Markdown("当前为手动模式：需要填写具体模型名称。")
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新")
                     delete_button = gr.Button("删除 (指定URL)", variant="stop")
@@ -96,8 +146,23 @@ def create_admin_ui() -> gr.Blocks:
         refresh_button.click(get_current_routes, outputs=routes_datagrid)
         add_update_button.click(
             add_or_update_route,
-            inputs=[model_name_input, model_url_input, api_key_input],
+            inputs=[
+                model_name_input,
+                model_url_input,
+                api_key_input,
+                auto_discover_models_input,
+                sync_interval_minutes_input,
+            ],
             outputs=[status_output, routes_datagrid],
+        )
+        auto_discover_models_input.change(
+            toggle_auto_discover_ui,
+            inputs=[auto_discover_models_input],
+            outputs=[
+                model_name_input,
+                sync_interval_minutes_input,
+                auto_discover_hint,
+            ],
         )
         delete_button.click(
             delete_route,

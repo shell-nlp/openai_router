@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 import gradio as gr
@@ -14,6 +15,20 @@ from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
 
+async def periodic_model_sync() -> None:
+    while True:
+        try:
+            synced_count = await run_in_threadpool(route_service.sync_due_backend_sources)
+            if synced_count:
+                logger.info("Periodic model sync processed {} backend source(s).", synced_count)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Periodic model sync failed: {}", exc)
+
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_engine()
@@ -21,8 +36,17 @@ async def lifespan(_: FastAPI):
 
     timeout = httpx.Timeout(10.0, connect=60.0, read=None, write=60.0)
     runtime_state.client = httpx.AsyncClient(timeout=timeout)
+    runtime_state.sync_task = asyncio.create_task(periodic_model_sync())
 
     yield
+
+    if runtime_state.sync_task is not None:
+        runtime_state.sync_task.cancel()
+        try:
+            await runtime_state.sync_task
+        except asyncio.CancelledError:
+            pass
+        runtime_state.sync_task = None
 
     if runtime_state.client is not None:
         await runtime_state.client.aclose()
