@@ -26,7 +26,7 @@ class RepositorySyncExclusionTest(unittest.TestCase):
         runtime_state.engine = self.original_engine
         self.temp_dir.cleanup()
 
-    def test_deleted_auto_managed_model_is_excluded_from_future_sync(self) -> None:
+    def test_deleted_auto_managed_model_is_recreated_by_future_sync(self) -> None:
         with Session(runtime_state.engine) as session:
             source = BackendSource(model_url="http://backend/v1", sync_interval_minutes=15)
             session.add(source)
@@ -45,7 +45,7 @@ class RepositorySyncExclusionTest(unittest.TestCase):
 
         deleted = repositories.delete_route("unknown", "http://backend/v1")
         self.assertTrue(deleted)
-        self.assertEqual(repositories.list_excluded_model_names(source_id), ["unknown"])
+        self.assertEqual(repositories.list_excluded_model_names(source_id), [])
 
         created_count, updated_count, deleted_count = repositories.sync_auto_managed_routes(
             source_id,
@@ -54,8 +54,10 @@ class RepositorySyncExclusionTest(unittest.TestCase):
             None,
         )
 
-        self.assertEqual((created_count, updated_count, deleted_count), (0, 0, 0))
-        self.assertEqual(repositories.list_routes_by_model("unknown"), [])
+        self.assertEqual((created_count, updated_count, deleted_count), (1, 0, 0))
+        routes = repositories.list_routes_by_model("unknown")
+        self.assertEqual(len(routes), 1)
+        self.assertTrue(routes[0].auto_managed)
 
     def test_manual_readd_clears_exclusion(self) -> None:
         with Session(runtime_state.engine) as session:
@@ -74,7 +76,7 @@ class RepositorySyncExclusionTest(unittest.TestCase):
             session.add(route)
             session.commit()
 
-        repositories.delete_route("unknown", "http://backend/v1")
+        repositories.replace_source_model_exclusions(source_id, ["unknown"])
         self.assertEqual(repositories.list_excluded_model_names(source_id), ["unknown"])
 
         repositories.upsert_route("unknown", "http://backend/v1", None)

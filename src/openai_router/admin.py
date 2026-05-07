@@ -5,6 +5,8 @@ from starlette.concurrency import run_in_threadpool
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
+ADMIN_CSS = "footer {display: none !important}"
+
 
 async def get_current_routes() -> list[list[str]]:
     return await run_in_threadpool(route_service.get_admin_routes)
@@ -160,10 +162,7 @@ def on_select_backend_source(
 
 
 def create_admin_ui() -> gr.Blocks:
-    with gr.Blocks(
-        title="模型路由管理器",
-        css="footer {display: none !important}",
-    ) as admin_ui:
+    with gr.Blocks(title="模型路由管理器") as admin_ui:
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
         router_base_url_output = gr.Textbox(
             label="当前路由后的 Base URL",
@@ -197,8 +196,8 @@ def create_admin_ui() -> gr.Blocks:
                         "最后同步 (UTC)",
                     ],
                     label="模型路由",
-                    row_count=(1, "fixed"),
-                    col_count=(7, "fixed"),
+                    row_count=1,
+                    column_count=7,
                     interactive=False,
                 )
             with gr.Column(scale=1):
@@ -247,8 +246,8 @@ def create_admin_ui() -> gr.Blocks:
                         "排除模型 (Excluded Models)",
                     ],
                     label="自动同步后端源",
-                    row_count=(1, "fixed"),
-                    col_count=(6, "fixed"),
+                    row_count=1,
+                    column_count=6,
                     interactive=False,
                 )
             with gr.Column(scale=1):
