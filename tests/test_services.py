@@ -146,6 +146,17 @@ class RouteServiceTest(unittest.TestCase):
 
         self.assertFalse(self.service._is_source_due_for_sync(source, now))
 
+    def test_source_due_check_supports_naive_last_sync_time(self) -> None:
+        now = datetime(2026, 5, 7, 5, 34, 58, tzinfo=timezone.utc)
+        source = BackendSource(
+            id=1,
+            model_url="http://localhost:8000/v1",
+            sync_interval_minutes=3,
+            last_synced_at=datetime(2026, 5, 7, 5, 31, 52),
+        )
+
+        self.assertTrue(self.service._is_source_due_for_sync(source, now))
+
 
 if __name__ == "__main__":
     unittest.main()
