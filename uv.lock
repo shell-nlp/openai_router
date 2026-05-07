@@ -645,7 +645,7 @@ wheels = [
 
 [[package]]
 name = "openai-router"
-version = "0.1.5"
+version = "0.1.6"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -659,7 +659,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.120.3" },
-    { name = "gradio", specifier = ">=5.49.1" },
+    { name = "gradio", specifier = ">=6.14.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "sqlmodel", specifier = ">=0.0.27" },
