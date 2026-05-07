@@ -16,40 +16,56 @@ class RouteService:
         self._round_robin_counters = defaultdict(int)
         self._round_robin_locks = defaultdict(threading.Lock)
 
-    def get_routing_target(self, model_name: str) -> tuple[str | None, list[str], str | None]:
+    def get_routing_target(
+        self,
+        model_name: str,
+    ) -> tuple[str | None, list[str], str | None, str | None]:
         routes = repositories.list_routes_by_model(model_name)
-        available_models = repositories.unique_model_names(repositories.list_model_names())
+        resolved_model_name = model_name
+        if not routes:
+            alias = repositories.get_alias(model_name)
+            if alias is not None:
+                resolved_model_name = alias.model_name
+                routes = repositories.list_routes_by_model(resolved_model_name)
+        available_models = self._list_available_model_names()
 
         if not routes:
-            return None, available_models, None
+            return None, available_models, None, None
 
         if len(routes) == 1:
             selected_route = routes[0]
-            return selected_route.model_url, available_models, selected_route.api_key
+            return (
+                selected_route.model_url,
+                available_models,
+                selected_route.api_key,
+                selected_route.model_name,
+            )
 
-        lock = self._round_robin_locks[model_name]
+        lock = self._round_robin_locks[resolved_model_name]
         with lock:
-            current_index = self._round_robin_counters[model_name]
-            self._round_robin_counters[model_name] = (current_index + 1) % len(routes)
+            current_index = self._round_robin_counters[resolved_model_name]
+            self._round_robin_counters[resolved_model_name] = (current_index + 1) % len(routes)
 
         selected_route = routes[current_index]
         logger.debug(
             "Round-Robin: model={}, selected_index={}, total={}",
-            model_name,
+            resolved_model_name,
             current_index,
             len(routes),
         )
-        return selected_route.model_url, available_models, selected_route.api_key
+        return (
+            selected_route.model_url,
+            available_models,
+            selected_route.api_key,
+            selected_route.model_name,
+        )
 
     def build_models_response(self) -> dict:
-        models_by_name: dict[str, int] = {}
-        for route in repositories.list_routes():
-            created_timestamp = int(route.created.timestamp())
-            previous_timestamp = models_by_name.get(route.model_name)
-            if previous_timestamp is None:
-                models_by_name[route.model_name] = created_timestamp
-            else:
-                models_by_name[route.model_name] = min(previous_timestamp, created_timestamp)
+        models_by_name = self._build_model_timestamps()
+        for alias in repositories.list_model_aliases():
+            if alias.model_name not in models_by_name:
+                continue
+            models_by_name[alias.alias_name] = int(alias.created.timestamp())
 
         models_data = [
             {
@@ -66,6 +82,12 @@ class RouteService:
     def get_admin_routes(self) -> list[list[str]]:
         rows: list[list[str]] = []
         source_map = {source.id: source for source in repositories.list_backend_sources()}
+        aliases_by_model = {
+            model_name: ", ".join(
+                sorted(alias.alias_name for alias in repositories.list_aliases_by_model(model_name))
+            )
+            for model_name in repositories.unique_model_names(repositories.list_model_names())
+        }
         routes = sorted(
             repositories.list_routes(),
             key=lambda route: (route.model_name, route.model_url),
@@ -79,6 +101,7 @@ class RouteService:
             rows.append(
                 [
                     route.model_name,
+                    aliases_by_model.get(route.model_name, ""),
                     route.model_url,
                     masked_key,
                     mode,
@@ -91,6 +114,7 @@ class RouteService:
     def add_or_update_route(
         self,
         model_name: str,
+        aliases_text: str | None,
         model_url: str,
         api_key: str | None,
         auto_discover_models: bool = False,
@@ -100,9 +124,12 @@ class RouteService:
         normalized_api_key = api_key.strip() if api_key else None
         normalized_api_key = normalized_api_key or None
         normalized_model_name = model_name.strip()
+        normalized_aliases_text = aliases_text or ""
         normalized_sync_interval = max(1, int(sync_interval_minutes))
 
         if auto_discover_models:
+            if normalized_aliases_text.strip():
+                raise ValueError("自动导入模式下不能直接设置别名，请同步完成后再为具体模型添加别名。")
             _, source = repositories.upsert_backend_source(
                 normalized_model_url,
                 normalized_api_key,
@@ -118,19 +145,35 @@ class RouteService:
             logger.info("[Admin] {}", message)
             return message
 
+        self._validate_model_name(normalized_model_name)
+        normalized_aliases = self._normalize_aliases(normalized_aliases_text, normalized_model_name)
+        self._validate_aliases(normalized_model_name, normalized_aliases)
+
         created, route = repositories.upsert_route(
             normalized_model_name,
             normalized_model_url,
             normalized_api_key,
         )
+        alias_result = repositories.replace_model_aliases(normalized_model_name, normalized_aliases)
+
         if created:
             message = (
-                f"新路由 '{route.model_name} -> {route.model_url}' 已添加 (用于负载均衡)。"
+                f"新路由 '{route.model_name} -> {route.model_url}' 已添加"
+                f"；别名 {len(normalized_aliases)} 个已同步。"
             )
         else:
-            message = f"路由 '{route.model_name} -> {route.model_url}' 的 API 密钥已更新。"
+            message = (
+                f"路由 '{route.model_name} -> {route.model_url}' 已更新"
+                f"；别名 {len(normalized_aliases)} 个已同步。"
+            )
 
-        logger.info("[Admin] {}", message)
+        logger.info(
+            "[Admin] {} aliases synced: created={}, updated={}, deleted={}",
+            message,
+            alias_result[0],
+            alias_result[1],
+            alias_result[2],
+        )
         return message
 
     def delete_route(self, model_name: str, model_url: str) -> str:
@@ -147,6 +190,57 @@ class RouteService:
     @staticmethod
     def _normalize_backend_url(model_url: str) -> str:
         return model_url.strip().rstrip("/")
+
+    def _list_available_model_names(self) -> list[str]:
+        return repositories.unique_model_names(
+            repositories.list_model_names() + repositories.list_alias_names()
+        )
+
+    def _build_model_timestamps(self) -> dict[str, int]:
+        models_by_name: dict[str, int] = {}
+        for route in repositories.list_routes():
+            created_timestamp = int(route.created.timestamp())
+            previous_timestamp = models_by_name.get(route.model_name)
+            if previous_timestamp is None:
+                models_by_name[route.model_name] = created_timestamp
+            else:
+                models_by_name[route.model_name] = min(previous_timestamp, created_timestamp)
+        return models_by_name
+
+    @staticmethod
+    def _normalize_aliases(aliases_text: str, model_name: str) -> list[str]:
+        raw_aliases = (
+            aliases_text.replace("\n", ",")
+            .replace("，", ",")
+            .replace(";", ",")
+            .split(",")
+        )
+        normalized_aliases = [
+            alias.strip()
+            for alias in raw_aliases
+            if alias.strip() and alias.strip() != model_name
+        ]
+        return repositories.unique_model_names(normalized_aliases)
+
+    @staticmethod
+    def _validate_model_name(model_name: str) -> None:
+        alias = repositories.get_alias(model_name)
+        if alias is not None and alias.model_name != model_name:
+            raise ValueError(
+                f"模型名 '{model_name}' 当前已被用作 '{alias.model_name}' 的别名，请先移除该别名。"
+            )
+
+    @staticmethod
+    def _validate_aliases(model_name: str, aliases: list[str]) -> None:
+        for alias_name in aliases:
+            if repositories.model_has_routes(alias_name) and alias_name != model_name:
+                raise ValueError(f"别名 '{alias_name}' 已经是一个真实模型名，不能重复占用。")
+
+            existing_alias = repositories.get_alias(alias_name)
+            if existing_alias is not None and existing_alias.model_name != model_name:
+                raise ValueError(
+                    f"别名 '{alias_name}' 已绑定到模型 '{existing_alias.model_name}'，请先解除原绑定。"
+                )
 
     def sync_due_backend_sources(self) -> int:
         now = datetime.now(timezone.utc)

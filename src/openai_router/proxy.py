@@ -30,6 +30,7 @@ class ResolvedRouteRequest:
     backend_url: str
     json_body: dict[str, Any]
     backend_api_key: str | None
+    routed_model_name: str
 
 
 async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
@@ -43,7 +44,7 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
     if model_name is None:
         raise HTTPException(status_code=400, detail="'model' field is required in request body")
 
-    server, available_models, backend_api_key = await run_in_threadpool(
+    server, available_models, backend_api_key, routed_model_name = await run_in_threadpool(
         route_service.get_routing_target,
         model_name,
     )
@@ -54,11 +55,13 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
         )
 
     backend_url = build_backend_url(server, request.url.path)
+    json_body["model"] = routed_model_name
     logger.info("Routing to backend_url: {} for model {}", backend_url, model_name)
     return ResolvedRouteRequest(
         backend_url=backend_url,
         json_body=json_body,
         backend_api_key=backend_api_key,
+        routed_model_name=routed_model_name,
     )
 
 

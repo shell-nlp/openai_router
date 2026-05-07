@@ -7,7 +7,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlmodel import SQLModel, create_engine
 
 from openai_router.config import SQLITE_DB_FILE, SQLITE_URL
-from openai_router.models import BackendSource, ModelRoute
+from openai_router.models import BackendSource, ModelAlias, ModelRoute
 from openai_router.runtime import runtime_state
 
 
@@ -41,7 +41,7 @@ def _rebuild_database_if_schema_changed(engine: Engine) -> Engine:
             logger.info("Database or table '{}' not found. A new database will be created.", ModelRoute.__tablename__)
             return engine
 
-        for table_model in (ModelRoute, BackendSource):
+        for table_model in (ModelRoute, BackendSource, ModelAlias):
             if not inspector.has_table(table_model.__tablename__):
                 continue
 

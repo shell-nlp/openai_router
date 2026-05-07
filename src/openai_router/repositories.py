@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from openai_router.db import get_engine
-from openai_router.models import BackendSource, ModelRoute
+from openai_router.models import BackendSource, ModelAlias, ModelRoute
 
 
 def list_model_names() -> list[str]:
@@ -13,9 +13,21 @@ def list_model_names() -> list[str]:
         return list(session.exec(statement).all())
 
 
+def list_alias_names() -> list[str]:
+    with Session(get_engine()) as session:
+        statement = select(ModelAlias.alias_name)
+        return list(session.exec(statement).all())
+
+
 def list_routes() -> list[ModelRoute]:
     with Session(get_engine()) as session:
         statement = select(ModelRoute)
+        return list(session.exec(statement).all())
+
+
+def list_model_aliases() -> list[ModelAlias]:
+    with Session(get_engine()) as session:
+        statement = select(ModelAlias)
         return list(session.exec(statement).all())
 
 
@@ -29,6 +41,24 @@ def list_routes_by_model(model_name: str) -> list[ModelRoute]:
     with Session(get_engine()) as session:
         statement = select(ModelRoute).where(ModelRoute.model_name == model_name)
         return list(session.exec(statement).all())
+
+
+def list_aliases_by_model(model_name: str) -> list[ModelAlias]:
+    with Session(get_engine()) as session:
+        statement = select(ModelAlias).where(ModelAlias.model_name == model_name)
+        return list(session.exec(statement).all())
+
+
+def get_alias(alias_name: str) -> ModelAlias | None:
+    with Session(get_engine()) as session:
+        statement = select(ModelAlias).where(ModelAlias.alias_name == alias_name)
+        return session.exec(statement).first()
+
+
+def model_has_routes(model_name: str) -> bool:
+    with Session(get_engine()) as session:
+        statement = select(ModelRoute.id).where(ModelRoute.model_name == model_name)
+        return session.exec(statement).first() is not None
 
 
 def find_route(model_name: str, model_url: str) -> ModelRoute | None:
@@ -153,6 +183,47 @@ def bulk_upsert_routes(
     return created_count, updated_count
 
 
+def replace_model_aliases(model_name: str, alias_names: list[str]) -> tuple[int, int, int]:
+    created_count = 0
+    updated_count = 0
+    deleted_count = 0
+    desired_aliases = set(alias_names)
+
+    with Session(get_engine()) as session:
+        existing_aliases = {
+            alias.alias_name: alias
+            for alias in session.exec(
+                select(ModelAlias).where(ModelAlias.model_name == model_name)
+            ).all()
+        }
+
+        for alias_name in alias_names:
+            alias = existing_aliases.get(alias_name)
+            if alias is None:
+                alias = session.exec(
+                    select(ModelAlias).where(ModelAlias.alias_name == alias_name)
+                ).first()
+
+            if alias is None:
+                session.add(ModelAlias(alias_name=alias_name, model_name=model_name))
+                created_count += 1
+                continue
+
+            alias.model_name = model_name
+            session.add(alias)
+            updated_count += 1
+
+        for alias_name, alias in existing_aliases.items():
+            if alias_name in desired_aliases:
+                continue
+            session.delete(alias)
+            deleted_count += 1
+
+        session.commit()
+
+    return created_count, updated_count, deleted_count
+
+
 def sync_auto_managed_routes(
     source_id: int,
     model_names: list[str],
@@ -205,6 +276,18 @@ def sync_auto_managed_routes(
             session.delete(route)
             deleted_count += 1
 
+            remaining_route = session.exec(
+                select(ModelRoute).where(
+                    ModelRoute.model_name == model_name,
+                    ModelRoute.id != route.id,
+                )
+            ).first()
+            if remaining_route is None:
+                for alias in session.exec(
+                    select(ModelAlias).where(ModelAlias.model_name == model_name)
+                ).all():
+                    session.delete(alias)
+
         session.commit()
 
     return created_count, updated_count, deleted_count
@@ -221,6 +304,17 @@ def delete_route(model_name: str, model_url: str) -> bool:
             return False
 
         session.delete(route)
+        remaining_route = session.exec(
+            select(ModelRoute).where(
+                ModelRoute.model_name == model_name,
+                ModelRoute.id != route.id,
+            )
+        ).first()
+        if remaining_route is None:
+            for alias in session.exec(
+                select(ModelAlias).where(ModelAlias.model_name == model_name)
+            ).all():
+                session.delete(alias)
         session.commit()
         return True
 

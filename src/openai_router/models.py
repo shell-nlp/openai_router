@@ -31,3 +31,13 @@ class ModelRoute(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class ModelAlias(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    alias_name: str = Field(index=True, unique=True)
+    model_name: str = Field(index=True)
+    created: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
