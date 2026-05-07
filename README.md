@@ -48,11 +48,11 @@ pip install openai-router -U
  
 ### Step-2：启动 
 ```bash 
-openai-router --host localhost --port 8000 
+openai-router --host 0.0.0.0 --port 8000
 ```
 浏览器自动打开  
-📍 UI：`http://localhost:8000`  
-📍 API 文档：`http://localhost:8000/docs`
+📍 UI：`http://<你的机器IP>:8000`  
+📍 API 文档：`http://<你的机器IP>:8000/docs`
  
 ### Step-3：添加后端样例
 在 Web UI 「添加 / 更新」填入：
@@ -113,8 +113,8 @@ openai-router --help
 ```
 | Flag     | Default     | Description  |
 | -------- | ----------- | ------------ |
-| `--host` | `localhost` | Bind address |
-| `--port` | `8000`      | Bind port    |
+| `--host` | `0.0.0.0`   | Bind address |
+| `--port` | `28000`     | Bind port    |
  
 
 ---

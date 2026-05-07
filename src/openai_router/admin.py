@@ -16,6 +16,7 @@ def get_router_base_url() -> str:
 
 async def add_or_update_route(
     model_name: str,
+    aliases_text: str | None,
     model_url: str,
     api_key: str | None,
     auto_discover_models: bool,
@@ -36,6 +37,7 @@ async def add_or_update_route(
         status_message = await run_in_threadpool(
             route_service.add_or_update_route,
             model_name,
+            aliases_text or "",
             model_url,
             api_key,
             auto_discover_models,
@@ -55,14 +57,17 @@ async def delete_route(model_name: str, model_url: str) -> tuple[str, list[list[
     return status_message, await get_current_routes()
 
 
-def on_select_route(routes_data: pd.DataFrame, evt: gr.SelectData) -> tuple[str, str, str]:
+def on_select_route(routes_data: pd.DataFrame, evt: gr.SelectData) -> tuple[str, str, str, str]:
     if evt.index is None:
-        return "", "", ""
+        return "", "", "", ""
 
     selected_row = routes_data.iloc[evt.index[0]]
     model_name = selected_row.iloc[0]
-    model_url = selected_row.iloc[1]
-    return model_name, model_url, ""
+    aliases_text = selected_row.iloc[1]
+    if pd.isna(aliases_text):
+        aliases_text = ""
+    model_url = selected_row.iloc[2]
+    return model_name, aliases_text, model_url, ""
 
 
 def toggle_auto_discover_ui(enabled: bool):
@@ -71,15 +76,24 @@ def toggle_auto_discover_ui(enabled: bool):
         value="" if enabled else "gpt4",
         placeholder="开启自动导入时无需填写" if enabled else None,
     )
+    aliases_update = (
+        gr.update(
+            interactive=False,
+            value="",
+            placeholder="多个别名请用逗号分隔；开启自动导入时不可编辑",
+        )
+        if enabled
+        else gr.update(interactive=True, placeholder=None)
+    )
     interval_update = gr.update(interactive=enabled, value=15)
     hint_update = gr.update(
         value=(
-            "已开启自动导入：保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。"
+            "已开启自动导入：保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。别名请在同步完成后针对具体模型单独维护。"
             if enabled
-            else "当前为手动模式：需要填写具体模型名称。"
+            else "当前为手动模式：需要填写具体模型名称；别名支持一次填写多个，使用逗号分隔。"
         )
     )
-    return model_update, interval_update, hint_update
+    return model_update, aliases_update, interval_update, hint_update
 
 
 def create_admin_ui() -> gr.Blocks:
@@ -106,6 +120,7 @@ def create_admin_ui() -> gr.Blocks:
                 routes_datagrid = gr.DataFrame(
                     headers=[
                         "模型名称 (Model Name)",
+                        "模型别名 (Aliases)",
                         "后端 URL (Backend URL)",
                         "API 密钥 (API Key)",
                         "管理方式 (Mode)",
@@ -114,7 +129,7 @@ def create_admin_ui() -> gr.Blocks:
                     ],
                     label="当前路由表",
                     row_count=(1, "fixed"),
-                    col_count=(6, "fixed"),
+                    col_count=(7, "fixed"),
                     interactive=False,
                 )
             with gr.Column(scale=1):
@@ -125,6 +140,11 @@ def create_admin_ui() -> gr.Blocks:
                     value="这里用于显示上一次的操作状态",
                 )
                 model_name_input = gr.Textbox(label="模型名称", value="gpt4")
+                aliases_input = gr.Textbox(
+                    label="模型别名",
+                    value="",
+                    info="可选。多个别名请用英文逗号分隔，例如：gpt-4o-latest,my-gpt4o。",
+                )
                 model_url_input = gr.Textbox(
                     label="后端 URL",
                     value="http://localhost:8082",
@@ -147,7 +167,9 @@ def create_admin_ui() -> gr.Blocks:
                     interactive=False,
                     info="仅在启用自动导入时生效，默认每 15 分钟同步一次 `/v1/models`。",
                 )
-                auto_discover_hint = gr.Markdown("当前为手动模式：需要填写具体模型名称。")
+                auto_discover_hint = gr.Markdown(
+                    "当前为手动模式：需要填写具体模型名称；别名支持一次填写多个，使用逗号分隔。"
+                )
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新")
                     delete_button = gr.Button("删除 (指定URL)", variant="stop")
@@ -159,6 +181,7 @@ def create_admin_ui() -> gr.Blocks:
             add_or_update_route,
             inputs=[
                 model_name_input,
+                aliases_input,
                 model_url_input,
                 api_key_input,
                 auto_discover_models_input,
@@ -171,6 +194,7 @@ def create_admin_ui() -> gr.Blocks:
             inputs=[auto_discover_models_input],
             outputs=[
                 model_name_input,
+                aliases_input,
                 sync_interval_minutes_input,
                 auto_discover_hint,
             ],
@@ -183,7 +207,7 @@ def create_admin_ui() -> gr.Blocks:
         routes_datagrid.select(
             on_select_route,
             inputs=[routes_datagrid],
-            outputs=[model_name_input, model_url_input, api_key_input],
+            outputs=[model_name_input, aliases_input, model_url_input, api_key_input],
         )
 
     return admin_ui

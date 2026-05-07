@@ -15,26 +15,63 @@ class RouteServiceTest(unittest.TestCase):
         self.service = RouteService()
 
     @patch("openai_router.services.repositories.list_model_names")
+    @patch("openai_router.services.repositories.list_alias_names")
+    @patch("openai_router.services.repositories.get_alias")
     @patch("openai_router.services.repositories.list_routes_by_model")
     def test_get_routing_target_round_robin(
         self,
         mock_list_routes_by_model,
+        mock_get_alias,
+        mock_list_alias_names,
         mock_list_model_names,
     ) -> None:
         mock_list_routes_by_model.return_value = [
             ModelRoute(model_name="gpt-4", model_url="http://backend-1/v1", api_key="key-1"),
             ModelRoute(model_name="gpt-4", model_url="http://backend-2/v1", api_key="key-2"),
         ]
+        mock_get_alias.return_value = None
+        mock_list_alias_names.return_value = []
         mock_list_model_names.return_value = ["gpt-4", "gpt-4"]
 
         first = self.service.get_routing_target("gpt-4")
         second = self.service.get_routing_target("gpt-4")
 
-        self.assertEqual(first, ("http://backend-1/v1", ["gpt-4"], "key-1"))
-        self.assertEqual(second, ("http://backend-2/v1", ["gpt-4"], "key-2"))
+        self.assertEqual(first, ("http://backend-1/v1", ["gpt-4"], "key-1", "gpt-4"))
+        self.assertEqual(second, ("http://backend-2/v1", ["gpt-4"], "key-2", "gpt-4"))
+
+    @patch("openai_router.services.repositories.list_model_names")
+    @patch("openai_router.services.repositories.list_alias_names")
+    @patch("openai_router.services.repositories.get_alias")
+    @patch("openai_router.services.repositories.list_routes_by_model")
+    def test_get_routing_target_resolves_alias(
+        self,
+        mock_list_routes_by_model,
+        mock_get_alias,
+        mock_list_alias_names,
+        mock_list_model_names,
+    ) -> None:
+        mock_list_routes_by_model.side_effect = [
+            [],
+            [ModelRoute(model_name="gpt-4", model_url="http://backend-1/v1", api_key="key-1")],
+        ]
+        mock_get_alias.return_value = type("Alias", (), {"model_name": "gpt-4"})()
+        mock_list_alias_names.return_value = ["gpt-4o-latest"]
+        mock_list_model_names.return_value = ["gpt-4"]
+
+        resolved = self.service.get_routing_target("gpt-4o-latest")
+
+        self.assertEqual(
+            resolved,
+            ("http://backend-1/v1", ["gpt-4", "gpt-4o-latest"], "key-1", "gpt-4"),
+        )
 
     @patch("openai_router.services.repositories.list_routes")
-    def test_build_models_response_uses_earliest_timestamp(self, mock_list_routes) -> None:
+    @patch("openai_router.services.repositories.list_model_aliases")
+    def test_build_models_response_uses_earliest_timestamp(
+        self,
+        mock_list_model_aliases,
+        mock_list_routes,
+    ) -> None:
         mock_list_routes.return_value = [
             ModelRoute(
                 model_name="gpt-4",
@@ -52,11 +89,25 @@ class RouteServiceTest(unittest.TestCase):
                 created=datetime(2025, 1, 3, tzinfo=timezone.utc),
             ),
         ]
+        mock_list_model_aliases.return_value = [
+            type(
+                "Alias",
+                (),
+                {
+                    "alias_name": "gpt-4o-latest",
+                    "model_name": "gpt-4",
+                    "created": datetime(2025, 1, 4, tzinfo=timezone.utc),
+                },
+            )()
+        ]
 
         response = self.service.build_models_response()
 
         self.assertEqual(response["object"], "list")
-        self.assertEqual([item["id"] for item in response["data"]], ["gpt-4", "text-embedding-3-large"])
+        self.assertEqual(
+            [item["id"] for item in response["data"]],
+            ["gpt-4", "gpt-4o-latest", "text-embedding-3-large"],
+        )
         self.assertEqual(response["data"][0]["created"], 1735689600)
 
     def test_add_route_normalizes_backend_url(self) -> None:
@@ -111,6 +162,7 @@ class RouteServiceTest(unittest.TestCase):
 
         message = self.service.add_or_update_route(
             "",
+            "",
             "http://localhost:8000/v1/",
             "sk-test",
             auto_discover_models=True,
@@ -124,6 +176,56 @@ class RouteServiceTest(unittest.TestCase):
         mock_sync_backend_source.assert_called_once_with(source)
         self.assertIn("同步间隔 15 分钟", message)
         self.assertIn("本次同步发现 2 个模型", message)
+
+    @patch("openai_router.services.repositories.replace_model_aliases")
+    @patch("openai_router.services.repositories.upsert_route")
+    @patch("openai_router.services.repositories.get_alias")
+    @patch("openai_router.services.repositories.model_has_routes")
+    def test_add_or_update_route_saves_aliases(
+        self,
+        mock_model_has_routes,
+        mock_get_alias,
+        mock_upsert_route,
+        mock_replace_model_aliases,
+    ) -> None:
+        mock_model_has_routes.return_value = False
+        mock_get_alias.return_value = None
+        mock_upsert_route.return_value = (
+            True,
+            ModelRoute(model_name="gpt-4", model_url="http://backend-1/v1", api_key="key-1"),
+        )
+        mock_replace_model_aliases.return_value = (2, 0, 0)
+
+        message = self.service.add_or_update_route(
+            "gpt-4",
+            "gpt-4o-latest, my-gpt4",
+            "http://backend-1/v1",
+            "key-1",
+        )
+
+        mock_replace_model_aliases.assert_called_once_with(
+            "gpt-4",
+            ["gpt-4o-latest", "my-gpt4"],
+        )
+        self.assertIn("别名 2 个已同步", message)
+
+    @patch("openai_router.services.repositories.get_alias")
+    @patch("openai_router.services.repositories.model_has_routes")
+    def test_validate_aliases_rejects_real_model_name(
+        self,
+        mock_model_has_routes,
+        mock_get_alias,
+    ) -> None:
+        mock_model_has_routes.return_value = True
+        mock_get_alias.return_value = None
+
+        with self.assertRaisesRegex(ValueError, "已经是一个真实模型名"):
+            self.service.add_or_update_route(
+                "gpt-4",
+                "text-embedding-3-large",
+                "http://backend-1/v1",
+                "key-1",
+            )
 
     def test_source_without_last_sync_is_due(self) -> None:
         source = BackendSource(
