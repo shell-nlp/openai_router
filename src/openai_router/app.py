@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import warnings
 
 import gradio as gr
 import httpx
@@ -13,6 +14,12 @@ from openai_router.db import create_db_and_tables, dispose_engine, initialize_en
 from openai_router.proxy import non_stream_proxy, resolve_route_request, stream_proxy
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
+
+warnings.filterwarnings(
+    "ignore",
+    message="SSR mode is not supported with multi-page apps when mounting on a FastAPI app. Disabling SSR mode.",
+    category=UserWarning,
+)
 
 
 async def periodic_model_sync() -> None:
@@ -106,7 +113,7 @@ def create_app() -> FastAPI:
         )
 
     admin_interface = create_admin_ui()
-    return gr.mount_gradio_app(app, admin_interface, path="/", css=ADMIN_CSS)
+    return gr.mount_gradio_app(app, admin_interface, path="/", css=ADMIN_CSS, ssr_mode=False)
 
 
 app = create_app()
