@@ -1,11 +1,13 @@
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from loguru import logger
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from openai_router.runtime import runtime_state
@@ -72,35 +74,65 @@ async def stream_proxy(
     request: Request,
     json_body: dict[str, Any],
     backend_api_key: str | None,
-):
+) -> Response:
     headers = build_proxy_headers(request, backend_api_key)
     client = get_http_client()
 
     try:
-        async with client.stream(
-            request.method,
-            backend_url,
-            params=request.query_params,
-            json=json_body,
-            headers=headers,
-        ) as response:
-            if response.status_code >= 400:
-                error_content = await response.aread()
-                logger.warning(
-                    "Backend error: {} - {}",
-                    response.status_code,
-                    error_content.decode(),
-                )
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=error_content.decode(),
-                )
+        response = await client.send(
+            client.build_request(
+                request.method,
+                backend_url,
+                params=request.query_params,
+                json=json_body,
+                headers=headers,
+            ),
+            stream=True,
+        )
+        if response.status_code >= 400:
+            error_content = await response.aread()
+            await response.aclose()
+            logger.warning(
+                "Backend error: {} - {}",
+                response.status_code,
+                error_content.decode(errors="replace"),
+            )
+            return Response(
+                content=error_content,
+                headers=filter_response_headers(response.headers),
+                media_type=response.headers.get("Content-Type"),
+                status_code=response.status_code,
+            )
 
-            async for chunk in response.aiter_bytes():
-                yield chunk
+        return StreamingResponse(
+            _stream_backend_response(response, backend_url),
+            headers=filter_response_headers(response.headers),
+            media_type=response.headers.get("Content-Type"),
+            status_code=response.status_code,
+            background=BackgroundTask(response.aclose),
+        )
     except httpx.ConnectError as exc:
         logger.error("Connection error to backend {}: {}", backend_url, exc)
-        raise HTTPException(status_code=503, detail="Backend service unavailable") from exc
+        return build_proxy_error_response(503, "Backend service unavailable")
+    except httpx.ReadTimeout as exc:
+        logger.error("Read timeout from backend {}: {}", backend_url, exc)
+        return build_proxy_error_response(504, "Backend request timed out")
+    except Exception as exc:
+        logger.exception("An error occurred during streaming proxy: {}", exc)
+        return build_proxy_error_response(500, f"Internal proxy error: {exc}")
+
+
+async def _stream_backend_response(
+    response: httpx.Response,
+    backend_url: str,
+) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in response.aiter_bytes():
+            yield chunk
+    except httpx.ReadTimeout as exc:
+        logger.error("Read timeout while streaming from backend {}: {}", backend_url, exc)
+    except Exception as exc:
+        logger.exception("An error occurred while streaming from backend {}: {}", backend_url, exc)
 
 
 async def non_stream_proxy(
@@ -120,6 +152,12 @@ async def non_stream_proxy(
             json=json_body,
             headers=headers,
         )
+        if response.status_code >= 400:
+            logger.warning(
+                "Backend error: {} - {}",
+                response.status_code,
+                response.text,
+            )
         return Response(
             content=response.content,
             headers=filter_response_headers(response.headers),
@@ -128,13 +166,13 @@ async def non_stream_proxy(
         )
     except httpx.ConnectError as exc:
         logger.error("Connection error to backend {}: {}", backend_url, exc)
-        raise HTTPException(status_code=503, detail="Backend service unavailable") from exc
+        return build_proxy_error_response(503, "Backend service unavailable")
     except httpx.ReadTimeout as exc:
         logger.error("Read timeout from backend {}: {}", backend_url, exc)
-        raise HTTPException(status_code=504, detail="Backend request timed out") from exc
+        return build_proxy_error_response(504, "Backend request timed out")
     except Exception as exc:
-        logger.error("An error occurred during non-streaming proxy: {}", exc)
-        raise HTTPException(status_code=500, detail=f"Internal proxy error: {exc}") from exc
+        logger.exception("An error occurred during non-streaming proxy: {}", exc)
+        return build_proxy_error_response(500, f"Internal proxy error: {exc}")
 
 
 def build_backend_url(server: str, path: str) -> str:
@@ -168,6 +206,10 @@ def filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
         for name, value in headers.items()
         if name.lower() not in HOP_BY_HOP_HEADERS
     }
+
+
+def build_proxy_error_response(status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
 def get_http_client() -> httpx.AsyncClient:

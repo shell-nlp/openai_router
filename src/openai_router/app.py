@@ -5,7 +5,6 @@ import warnings
 import gradio as gr
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
@@ -26,9 +25,13 @@ warnings.filterwarnings(
 async def periodic_model_sync() -> None:
     while True:
         try:
-            synced_count = await run_in_threadpool(route_service.sync_due_backend_sources)
+            synced_count = await run_in_threadpool(
+                route_service.sync_due_backend_sources
+            )
             if synced_count:
-                logger.info("Periodic model sync processed {} backend source(s).", synced_count)
+                logger.info(
+                    "Periodic model sync processed {} backend source(s).", synced_count
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -97,14 +100,11 @@ def create_app() -> FastAPI:
     async def router(request: Request):
         resolved_request = await resolve_route_request(request)
         if resolved_request.json_body.get("stream", False):
-            return StreamingResponse(
-                stream_proxy(
-                    resolved_request.backend_url,
-                    request,
-                    resolved_request.json_body,
-                    resolved_request.backend_api_key,
-                ),
-                media_type="text/event-stream",
+            return await stream_proxy(
+                resolved_request.backend_url,
+                request,
+                resolved_request.json_body,
+                resolved_request.backend_api_key,
             )
         return await non_stream_proxy(
             resolved_request.backend_url,
@@ -114,7 +114,9 @@ def create_app() -> FastAPI:
         )
 
     admin_interface = create_admin_ui()
-    return gr.mount_gradio_app(app, admin_interface, path="/", css=ADMIN_CSS, ssr_mode=False)
+    return gr.mount_gradio_app(
+        app, admin_interface, path="/", css=ADMIN_CSS, ssr_mode=False
+    )
 
 
 app = create_app()
