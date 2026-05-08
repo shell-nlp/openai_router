@@ -1,7 +1,8 @@
 import json
 import threading
+from dataclasses import dataclass
 from bisect import bisect_left
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,11 +26,21 @@ CONSISTENT_HASH_HEADER_NAMES = (
 VIRTUAL_NODES_PER_ROUTE = 160
 
 
+@dataclass(frozen=True)
+class RoutingCacheSnapshot:
+    routes_by_model: dict[str, tuple[ModelRoute, ...]]
+    alias_to_model: dict[str, str]
+    available_model_names: tuple[str, ...]
+    routing_policy: str
+
+
 class RouteService:
     def __init__(self) -> None:
         self._round_robin_counters = defaultdict(int)
         self._round_robin_locks = defaultdict(threading.Lock)
         self._consistent_hash_lock = threading.Lock()
+        self._routing_cache_lock = threading.Lock()
+        self._routing_cache: RoutingCacheSnapshot | None = None
         self._consistent_hash_rings: dict[
             str,
             tuple[tuple[str, ...], list[tuple[int, ModelRoute]]],
@@ -41,17 +52,16 @@ class RouteService:
         request_payload: Mapping[str, Any] | None = None,
         request_headers: Mapping[str, str] | None = None,
     ) -> tuple[str | None, list[str], str | None, str | None]:
-        routes = repositories.list_routes_by_model(model_name)
+        cache = self._get_routing_cache()
+        routes = cache.routes_by_model.get(model_name, ())
         resolved_model_name = model_name
         if not routes:
-            alias = repositories.get_alias(model_name)
-            if alias is not None:
-                resolved_model_name = alias.model_name
-                routes = repositories.list_routes_by_model(resolved_model_name)
-        available_models = self._list_available_model_names()
+            resolved_model_name = cache.alias_to_model.get(model_name, model_name)
+            if resolved_model_name != model_name:
+                routes = cache.routes_by_model.get(resolved_model_name, ())
 
         if not routes:
-            return None, available_models, None, None
+            return None, list(cache.available_model_names), None, None
 
         selected_route = self._select_route(
             resolved_model_name,
@@ -61,20 +71,18 @@ class RouteService:
         )
         return (
             selected_route.model_url,
-            available_models,
+            list(cache.available_model_names),
             selected_route.api_key,
             selected_route.model_name,
         )
 
     def get_routing_policy(self) -> str:
-        setting = repositories.get_router_setting()
-        if setting is None:
-            return "round_robin"
-        return self._validate_routing_policy(setting.routing_policy)
+        return self._get_routing_cache().routing_policy
 
     def update_routing_policy(self, routing_policy: str) -> str:
         normalized_policy = self._validate_routing_policy(routing_policy)
         repositories.upsert_router_setting(normalized_policy)
+        self.refresh_routing_cache()
         message = f"路由策略已更新为 '{normalized_policy}'。"
         logger.info("[Admin] {}", message)
         return message
@@ -193,6 +201,7 @@ class RouteService:
             alias_result[1],
             alias_result[2],
         )
+        self.refresh_routing_cache()
         return message
 
     def add_or_update_backend_source(
@@ -252,6 +261,7 @@ class RouteService:
 
         message = f"后端源 '{normalized_model_url}' 已删除，其自动同步生成的路由也已一并清理。"
         logger.info("[Admin] {}", message)
+        self.refresh_routing_cache()
         return message
 
     def delete_route(self, model_name: str, model_url: str) -> str:
@@ -263,6 +273,7 @@ class RouteService:
 
         message = f"路由 '{normalized_model_name} -> {normalized_model_url}' 已删除。"
         logger.info("[Admin] Route deleted: {} -> {}", normalized_model_name, normalized_model_url)
+        self.refresh_routing_cache()
         return message
 
     @staticmethod
@@ -273,6 +284,53 @@ class RouteService:
         return repositories.unique_model_names(
             repositories.list_model_names() + repositories.list_alias_names()
         )
+
+    def refresh_routing_cache(self) -> RoutingCacheSnapshot:
+        routes = repositories.list_routes()
+        aliases = repositories.list_model_aliases()
+        setting = repositories.get_router_setting()
+
+        routes_by_model: dict[str, list[ModelRoute]] = defaultdict(list)
+        for route in routes:
+            routes_by_model[route.model_name].append(route)
+
+        snapshot = RoutingCacheSnapshot(
+            routes_by_model={model_name: tuple(model_routes) for model_name, model_routes in routes_by_model.items()},
+            alias_to_model={alias.alias_name: alias.model_name for alias in aliases},
+            available_model_names=tuple(
+                repositories.unique_model_names(
+                    [route.model_name for route in routes] + [alias.alias_name for alias in aliases]
+                )
+            ),
+            routing_policy="round_robin"
+            if setting is None
+            else self._validate_routing_policy(setting.routing_policy),
+        )
+
+        with self._routing_cache_lock:
+            self._routing_cache = snapshot
+
+        with self._consistent_hash_lock:
+            valid_models = set(snapshot.routes_by_model)
+            self._consistent_hash_rings = {
+                model_name: ring
+                for model_name, ring in self._consistent_hash_rings.items()
+                if model_name in valid_models
+            }
+
+        return snapshot
+
+    def _get_routing_cache(self) -> RoutingCacheSnapshot:
+        cache = self._routing_cache
+        if cache is not None:
+            return cache
+
+        with self._routing_cache_lock:
+            cache = self._routing_cache
+            if cache is not None:
+                return cache
+
+        return self.refresh_routing_cache()
 
     def _build_model_timestamps(self) -> dict[str, int]:
         models_by_name: dict[str, int] = {}
@@ -328,7 +386,7 @@ class RouteService:
     def _select_route(
         self,
         model_name: str,
-        routes: list[ModelRoute],
+        routes: Sequence[ModelRoute],
         request_payload: Mapping[str, Any] | None,
         request_headers: Mapping[str, str] | None,
     ) -> ModelRoute:
@@ -349,7 +407,7 @@ class RouteService:
     def _select_round_robin_route(
         self,
         model_name: str,
-        routes: list[ModelRoute],
+        routes: Sequence[ModelRoute],
     ) -> ModelRoute:
         lock = self._round_robin_locks[model_name]
         with lock:
@@ -368,7 +426,7 @@ class RouteService:
     def _select_consistent_hash_route(
         self,
         model_name: str,
-        routes: list[ModelRoute],
+        routes: Sequence[ModelRoute],
         request_payload: Mapping[str, Any] | None,
         request_headers: Mapping[str, str] | None,
     ) -> ModelRoute:
@@ -392,7 +450,7 @@ class RouteService:
     def _get_consistent_hash_ring(
         self,
         model_name: str,
-        routes: list[ModelRoute],
+        routes: Sequence[ModelRoute],
     ) -> list[tuple[int, ModelRoute]]:
         sorted_routes = sorted(routes, key=lambda route: route.model_url)
         route_signature = tuple(route.model_url for route in sorted_routes)
@@ -619,15 +677,24 @@ class RouteService:
     def sync_due_backend_sources(self) -> int:
         now = datetime.now(timezone.utc)
         synced_count = 0
+        cache_dirty = False
         for source in repositories.list_backend_sources():
             if not self._is_source_due_for_sync(source, now):
                 continue
-            self.sync_backend_source(source)
+            self.sync_backend_source(source, refresh_cache=False)
             synced_count += 1
+            cache_dirty = True
+
+        if cache_dirty:
+            self.refresh_routing_cache()
 
         return synced_count
 
-    def sync_backend_source(self, source: BackendSource) -> dict[str, int]:
+    def sync_backend_source(
+        self,
+        source: BackendSource,
+        refresh_cache: bool = True,
+    ) -> dict[str, int]:
         synchronized_at = datetime.now(timezone.utc)
         try:
             discovered_models = self._fetch_backend_models(source.model_url, source.api_key)
@@ -650,6 +717,8 @@ class RouteService:
                 updated_count,
                 deleted_count,
             )
+            if refresh_cache:
+                self.refresh_routing_cache()
             return {
                 "discovered": len(discovered_models),
                 "created": created_count,

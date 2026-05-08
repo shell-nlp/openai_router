@@ -10,6 +10,7 @@ from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
 from openai_router.admin import ADMIN_CSS, create_admin_ui
+from openai_router.config import MODEL_SYNC_CHECK_INTERVAL_SECONDS
 from openai_router.db import create_db_and_tables, dispose_engine, initialize_engine
 from openai_router.proxy import non_stream_proxy, resolve_route_request, stream_proxy
 from openai_router.runtime import runtime_state
@@ -33,7 +34,7 @@ async def periodic_model_sync() -> None:
         except Exception as exc:
             logger.exception("Periodic model sync failed: {}", exc)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(MODEL_SYNC_CHECK_INTERVAL_SECONDS)
 
 
 @asynccontextmanager

@@ -7,3 +7,5 @@ DATA_DIR.mkdir(exist_ok=True)
 
 SQLITE_DB_FILE = DATA_DIR / "routes.db"
 SQLITE_URL = f"sqlite:///{SQLITE_DB_FILE}"
+
+MODEL_SYNC_CHECK_INTERVAL_SECONDS = 300
