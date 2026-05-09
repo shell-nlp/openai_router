@@ -17,7 +17,7 @@ dependencies = [
 openai-router = "openai_router.main:cli_app"
 
 [[tool.uv.index]]
-url = "https://pypi.org/simple/"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
 
 
