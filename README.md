@@ -75,6 +75,32 @@ pip install -U openai-router
 openai-router --host 0.0.0.0 --port 28000
 ```
 
+### `uv tool` 安装和使用示例
+
+如果你不想进入项目源码目录，也不想自己管理虚拟环境，可以直接用 `uv tool`：
+
+```bash
+uv tool install openai-router
+uv tool run openai-router --host 0.0.0.0 --port 28000
+```
+
+如果你刚安装完，命令还没有生效，可以先执行：
+
+```bash
+uv tool update-shell
+```
+
+然后重新打开终端，再检查：
+
+```bash
+openai-router --help
+```
+
+启动后，继续按本文后面的步骤：
+
+- 打开 `http://127.0.0.1:28000/` 配置模型路由
+- 使用 `http://127.0.0.1:28000/v1` 作为统一 `base_url`
+
 ### 启动后你应该看到什么
 
 服务启动后可访问：
