@@ -4,7 +4,7 @@ import warnings
 
 import gradio as gr
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
@@ -70,6 +70,12 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
 
+    @app.get(
+        "/health",
+    )
+    async def health():
+        return Response(status_code=200)
+
     @app.get("/v1/models", summary="List available models")
     async def list_models() -> dict:
         try:
@@ -86,6 +92,8 @@ def create_app() -> FastAPI:
                 detail=f"Internal server error when retrieving models: {exc}",
             ) from exc
 
+    @app.post("/tokenize", summary="/tokenize")
+    @app.post("/detokenize", summary="/detokenize")
     @app.post("/v1/responses", summary="/v1/responses ")
     @app.post("/v1/completions", summary="/v1/completions")
     @app.post("/v1/chat/completions", summary="/v1/chat/completions")
