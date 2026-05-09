@@ -118,6 +118,8 @@ http://127.0.0.1:8001/v1
    - 后端 API 密钥：按需填写
 3. 点击“添加 / 更新路由”
 
+<img src="static/模型路由.jpeg" width="800">
+
 ### 每个字段怎么理解
 
 - 模型名称：客户端请求时 `model` 字段使用的名字
@@ -165,6 +167,8 @@ http://127.0.0.1:8001/v1
 3. 点击“添加 / 更新后端配置”
 
 保存后会立即拉取一次模型列表，并自动生成对应路由。
+
+<img src="static/后端配置.jpeg" width="800">
 
 ### 什么时候用“排除模型”
 
@@ -389,7 +393,3 @@ docker compose down
 ## 架构图
 
 <img src="static/arch.png" width="800">
-
-## 管理界面
-
-<img src="static/ui.png" width="800">
