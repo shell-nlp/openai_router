@@ -5,8 +5,10 @@ import warnings
 import gradio as gr
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
+from pathlib import Path
 
 from openai_router.admin import ADMIN_CSS, create_admin_ui
 from openai_router.config import MODEL_SYNC_CHECK_INTERVAL_SECONDS
@@ -14,6 +16,13 @@ from openai_router.db import create_db_and_tables, dispose_engine, initialize_en
 from openai_router.proxy import non_stream_proxy, resolve_route_request, stream_proxy
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
+
+TEMPLATE_DIR = Path(__file__).parent
+jinja_env = Environment(
+    loader=FileSystemLoader(TEMPLATE_DIR),
+    autoescape=select_autoescape(),
+)
+chat_template = jinja_env.get_template("chat_template.jinja")
 
 warnings.filterwarnings(
     "ignore",
@@ -107,6 +116,13 @@ def create_app() -> FastAPI:
     @app.post("/v1/rerank", summary="/v1/rerank")
     async def router(request: Request):
         resolved_request = await resolve_route_request(request)
+        messages = resolved_request.json_body.get("messages")
+        if messages:
+            rendered_prompt = chat_template.render(
+                messages=messages,
+                add_generation_prompt=True,
+            )
+            logger.info("prompt:\n{}", rendered_prompt)
         if resolved_request.json_body.get("stream", False):
             return await stream_proxy(
                 resolved_request.backend_url,
