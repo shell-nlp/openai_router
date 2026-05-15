@@ -10,6 +10,11 @@ from loguru import logger
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
+from openai_router.chat_logging import (
+    CHAT_COMPLETION_PATHS,
+    _log_chat_response,
+    _stream_backend_response_with_logging,
+)
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -77,6 +82,7 @@ async def stream_proxy(
 ) -> Response:
     headers = build_proxy_headers(request, backend_api_key)
     client = get_http_client()
+    is_chat = request.url.path in CHAT_COMPLETION_PATHS
 
     try:
         response = await client.send(
@@ -104,6 +110,14 @@ async def stream_proxy(
                 status_code=response.status_code,
             )
 
+        if is_chat:
+            return StreamingResponse(
+                _stream_backend_response_with_logging(response, backend_url),
+                headers=filter_response_headers(response.headers),
+                media_type=response.headers.get("Content-Type"),
+                status_code=response.status_code,
+                background=BackgroundTask(response.aclose),
+            )
         return StreamingResponse(
             _stream_backend_response(response, backend_url),
             headers=filter_response_headers(response.headers),
@@ -143,6 +157,7 @@ async def non_stream_proxy(
 ) -> Response:
     headers = build_proxy_headers(request, backend_api_key)
     client = get_http_client()
+    is_chat = request.url.path in CHAT_COMPLETION_PATHS
 
     try:
         response = await client.request(
@@ -158,6 +173,8 @@ async def non_stream_proxy(
                 response.status_code,
                 response.text,
             )
+        if is_chat:
+            _log_chat_response(response.content)
         return Response(
             content=response.content,
             headers=filter_response_headers(response.headers),
