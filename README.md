@@ -30,6 +30,58 @@
 | ⚡ 负载均衡 | 可配置多个同名模型，自动进行轮询式负载均衡 |
 | 🎨 Web UI | Gradio 即用的管理面板 |
 | 🔍 兼容 OpenAI | SDK / LangChain / AutoGen / LlamaIndex / CrewAI 等一行代码都不用改 |
+| 📝 请求/响应日志 | 自动使用 Jinja2 模板渲染和打印聊天请求与响应内容，支持流式输出和思考过程 |
+
+---
+
+## 📝 请求/响应日志（重点功能 🚀）
+
+> ⚠️ **其他开源路由（如 vLLM Router、SGLang Model Gateway、OneAPI 等）均不支持此功能！**
+>
+> 在大模型开发调试过程中，无法直接看到模型收到的"原始提示词"和"思考过程"，只能通过后端日志或额外工具来查看，非常不便。
+
+Router 会自动记录聊天接口（`/v1/chat/completions`、`/v1/completions`、`/v1/responses`）的请求和响应内容：
+
+### 请求日志
+- 当请求包含 `messages` 字段时，使用 `chat_template.jinja` 模板渲染为完整的提示词字符串
+- 渲染后的提示词会通过 `logger.info` 打印到日志
+- **你能直接看到模型收到的原始提示词**，方便排查提示词工程问题
+
+### 响应日志
+- **非流式响应**：直接解析响应 JSON，提取 `content` 和 `reasoning`（思考过程）
+- **流式响应**：收集所有 SSE chunks，等待流式传输完成后一次性打印完整内容
+- 如果模型返回了 `reasoning` 或 `thinking` 字段，会一起打印（格式为 `<think>\n...\n</think>`）
+- **你能直接看到模型的思考过程**，这对调试思维链模型至关重要
+
+### 示例输出
+
+**请求日志示例：**
+```
+INFO: Rendered prompt:
+<|im_start|>system
+你是一个有帮助的助手。<|im_end|>
+<|im_start|>user
+你好！<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+```
+
+**响应日志示例：**
+```
+INFO: Model response:
+<think>
+1. 分析用户输入：用户用中文打招呼
+2. 确定意图：只是想开始对话
+3. 构思回复：用中文问候，并询问有什么可以帮助的
+</think>
+
+你好！很高兴能为你提供帮助。请问今天有什么我可以帮你的吗？😊
+```
+
+有了这个功能，你在调试 LLM 应用时再也不用猜测模型在想什么了！
 
 ---
 
