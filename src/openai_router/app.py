@@ -1,4 +1,6 @@
 import asyncio
+import json
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 import warnings
 
@@ -18,10 +20,24 @@ from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
 TEMPLATE_DIR = Path(__file__).parent
+
+
+def parse_tool_arguments(arguments):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(arguments, Mapping):
+        return arguments
+    return {}
+
+
 jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(),
 )
+jinja_env.filters["parse_tool_arguments"] = parse_tool_arguments
 chat_template = jinja_env.get_template("chat_template.jinja")
 
 warnings.filterwarnings(

@@ -117,7 +117,7 @@
                     {{- '\n<tool_call>\n<function=' + tool_call.name + '>\n' }}
                 {%- endif %}
                 {%- if tool_call.arguments is defined %}
-                    {%- for args_name, args_value in tool_call.arguments|items %}
+                    {%- for args_name, args_value in tool_call.arguments|parse_tool_arguments|items %}
                         {{- '<parameter=' + args_name + '>\n' }}
                         {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}
                         {{- args_value }}
