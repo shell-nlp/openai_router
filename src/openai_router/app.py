@@ -15,7 +15,12 @@ from pathlib import Path
 from openai_router.admin import ADMIN_CSS, create_admin_ui
 from openai_router.config import MODEL_SYNC_CHECK_INTERVAL_SECONDS
 from openai_router.db import create_db_and_tables, dispose_engine, initialize_engine
-from openai_router.proxy import non_stream_proxy, resolve_route_request, stream_proxy
+from openai_router.proxy import (
+    non_stream_proxy,
+    resolve_response_request,
+    resolve_route_request,
+    stream_proxy,
+)
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -31,6 +36,12 @@ def parse_tool_arguments(arguments):
     if isinstance(arguments, Mapping):
         return arguments
     return {}
+
+
+def parse_stream_parameter(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 jinja_env = Environment(
@@ -89,6 +100,7 @@ async def lifespan(_: FastAPI):
         runtime_state.client = None
         logger.info("HTTPX client closed.")
 
+    runtime_state.clear_response_routes()
     dispose_engine()
 
 
@@ -117,20 +129,7 @@ def create_app() -> FastAPI:
                 detail=f"Internal server error when retrieving models: {exc}",
             ) from exc
 
-    @app.post("/tokenize", summary="/tokenize")
-    @app.post("/detokenize", summary="/detokenize")
-    @app.post("/v1/responses", summary="/v1/responses ")
-    @app.post("/v1/completions", summary="/v1/completions")
-    @app.post("/v1/chat/completions", summary="/v1/chat/completions")
-    @app.post("/v1/embeddings", summary="/v1/embeddings")
-    @app.post("/v1/moderations", summary="/v1/moderations")
-    @app.post("/v1/images/generations", summary="/v1/images/generations")
-    @app.post("/v1/images/edits", summary="/v1/images/edits")
-    @app.post("/v1/images/variations", summary="/v1/images/variations")
-    @app.post("/v1/audio/transcriptions", summary="/v1/audio/transcriptions")
-    @app.post("/v1/audio/speech", summary="/v1/audio/speech")
-    @app.post("/v1/rerank", summary="/v1/rerank")
-    async def router(request: Request):
+    async def route_model_request(request: Request):
         resolved_request = await resolve_route_request(request)
         messages = resolved_request.json_body.get("messages")
         if messages:
@@ -145,13 +144,57 @@ def create_app() -> FastAPI:
                 request,
                 resolved_request.json_body,
                 resolved_request.backend_api_key,
+                resolved_request.backend_server_url,
             )
         return await non_stream_proxy(
             resolved_request.backend_url,
             request,
             resolved_request.json_body,
             resolved_request.backend_api_key,
+            resolved_request.backend_server_url,
         )
+
+    @app.post("/v1/responses", summary="/v1/responses")
+    async def responses_router(request: Request):
+        return await route_model_request(request)
+
+    @app.get("/v1/responses/{response_id}", summary="/v1/responses/{response_id}")
+    @app.post(
+        "/v1/responses/{response_id}/cancel",
+        summary="/v1/responses/{response_id}/cancel",
+    )
+    async def response_operation_router(response_id: str, request: Request):
+        resolved_request = await resolve_response_request(request, response_id)
+        if request.method.upper() == "GET" and parse_stream_parameter(
+            request.query_params.get("stream")
+        ):
+            return await stream_proxy(
+                resolved_request.backend_url,
+                request,
+                None,
+                resolved_request.backend_api_key,
+            )
+        return await non_stream_proxy(
+            resolved_request.backend_url,
+            request,
+            None,
+            resolved_request.backend_api_key,
+        )
+
+    @app.post("/tokenize", summary="/tokenize")
+    @app.post("/detokenize", summary="/detokenize")
+    @app.post("/v1/completions", summary="/v1/completions")
+    @app.post("/v1/chat/completions", summary="/v1/chat/completions")
+    @app.post("/v1/embeddings", summary="/v1/embeddings")
+    @app.post("/v1/moderations", summary="/v1/moderations")
+    @app.post("/v1/images/generations", summary="/v1/images/generations")
+    @app.post("/v1/images/edits", summary="/v1/images/edits")
+    @app.post("/v1/images/variations", summary="/v1/images/variations")
+    @app.post("/v1/audio/transcriptions", summary="/v1/audio/transcriptions")
+    @app.post("/v1/audio/speech", summary="/v1/audio/speech")
+    @app.post("/v1/rerank", summary="/v1/rerank")
+    async def router(request: Request):
+        return await route_model_request(request)
 
     admin_interface = create_admin_ui()
     return gr.mount_gradio_app(

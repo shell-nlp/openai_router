@@ -1,4 +1,5 @@
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -13,6 +14,8 @@ from starlette.concurrency import run_in_threadpool
 from openai_router.chat_logging import (
     CHAT_COMPLETION_PATHS,
     _log_chat_response,
+    _log_stream_chat_response,
+    _parse_sse_data,
     _stream_backend_response_with_logging,
 )
 from openai_router.runtime import runtime_state
@@ -34,10 +37,17 @@ HOP_BY_HOP_HEADERS = {
 
 @dataclass
 class ResolvedRouteRequest:
+    backend_server_url: str
     backend_url: str
     json_body: dict[str, Any]
     backend_api_key: str | None
     routed_model_name: str
+
+
+@dataclass
+class ResolvedResponseRequest:
+    backend_url: str
+    backend_api_key: str | None
 
 
 async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
@@ -67,6 +77,7 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
     json_body["model"] = routed_model_name
     logger.info("Routing to backend_url: {} for model {}", backend_url, model_name)
     return ResolvedRouteRequest(
+        backend_server_url=server,
         backend_url=backend_url,
         json_body=json_body,
         backend_api_key=backend_api_key,
@@ -74,11 +85,34 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
     )
 
 
+async def resolve_response_request(
+    request: Request,
+    response_id: str,
+) -> ResolvedResponseRequest:
+    stored_route = runtime_state.get_response_route(response_id)
+    if stored_route is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Unknown response_id. This router can only retrieve or cancel "
+                "responses created through the same router instance recently."
+            ),
+        )
+
+    backend_url = build_backend_url(stored_route.backend_server_url, request.url.path)
+    logger.info("Routing response {} to backend_url: {}", response_id, backend_url)
+    return ResolvedResponseRequest(
+        backend_url=backend_url,
+        backend_api_key=stored_route.backend_api_key,
+    )
+
+
 async def stream_proxy(
     backend_url: str,
     request: Request,
-    json_body: dict[str, Any],
+    json_body: dict[str, Any] | None,
     backend_api_key: str | None,
+    backend_server_url: str | None = None,
 ) -> Response:
     headers = build_proxy_headers(request, backend_api_key)
     client = get_http_client()
@@ -108,6 +142,20 @@ async def stream_proxy(
                 headers=filter_response_headers(response.headers),
                 media_type=response.headers.get("Content-Type"),
                 status_code=response.status_code,
+            )
+
+        if _should_track_response_route(request, backend_server_url):
+            return StreamingResponse(
+                _stream_backend_response_with_tracking(
+                    response,
+                    backend_url,
+                    backend_server_url,
+                    backend_api_key,
+                ),
+                headers=filter_response_headers(response.headers),
+                media_type=response.headers.get("Content-Type"),
+                status_code=response.status_code,
+                background=BackgroundTask(response.aclose),
             )
 
         if is_chat:
@@ -149,11 +197,51 @@ async def _stream_backend_response(
         logger.exception("An error occurred while streaming from backend {}: {}", backend_url, exc)
 
 
+async def _stream_backend_response_with_tracking(
+    response: httpx.Response,
+    backend_url: str,
+    backend_server_url: str,
+    backend_api_key: str | None,
+) -> AsyncIterator[bytes]:
+    chunks: list[bytes] = []
+    pending_sse_line = ""
+    has_tracked_response = False
+
+    try:
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+            if not has_tracked_response:
+                pending_sse_line, has_tracked_response = _remember_response_route_from_sse_chunk(
+                    pending_sse_line,
+                    chunk,
+                    backend_server_url,
+                    backend_api_key,
+                )
+            yield chunk
+
+        if not has_tracked_response and pending_sse_line:
+            _remember_response_route_from_sse_lines(
+                [pending_sse_line],
+                backend_server_url,
+                backend_api_key,
+            )
+        _log_stream_chat_response(chunks)
+    except httpx.ReadTimeout as exc:
+        logger.error("Read timeout while streaming from backend {}: {}", backend_url, exc)
+    except Exception as exc:
+        logger.exception(
+            "An error occurred while streaming from backend {}: {}",
+            backend_url,
+            exc,
+        )
+
+
 async def non_stream_proxy(
     backend_url: str,
     request: Request,
-    json_body: dict[str, Any],
+    json_body: dict[str, Any] | None,
     backend_api_key: str | None,
+    backend_server_url: str | None = None,
 ) -> Response:
     headers = build_proxy_headers(request, backend_api_key)
     client = get_http_client()
@@ -172,6 +260,12 @@ async def non_stream_proxy(
                 "Backend error: {} - {}",
                 response.status_code,
                 response.text,
+            )
+        elif _should_track_response_route(request, backend_server_url):
+            _remember_response_route_from_body(
+                response.content,
+                backend_server_url,
+                backend_api_key,
             )
         if is_chat:
             _log_chat_response(response.content)
@@ -233,3 +327,96 @@ def get_http_client() -> httpx.AsyncClient:
     if runtime_state.client is None:
         raise RuntimeError("HTTP client is not initialized.")
     return runtime_state.client
+
+
+def _should_track_response_route(
+    request: Request,
+    backend_server_url: str | None,
+) -> bool:
+    return (
+        backend_server_url is not None
+        and request.method.upper() == "POST"
+        and request.url.path == "/v1/responses"
+    )
+
+
+def _remember_response_route_from_body(
+    response_content: bytes,
+    backend_server_url: str,
+    backend_api_key: str | None,
+) -> None:
+    try:
+        response_payload = json.loads(response_content)
+    except json.JSONDecodeError:
+        return
+
+    if isinstance(response_payload, Mapping):
+        _remember_response_route_from_payload(
+            response_payload,
+            backend_server_url,
+            backend_api_key,
+        )
+
+
+def _remember_response_route_from_sse_chunk(
+    pending_sse_line: str,
+    chunk: bytes,
+    backend_server_url: str,
+    backend_api_key: str | None,
+) -> tuple[str, bool]:
+    sse_text = pending_sse_line + chunk.decode("utf-8", errors="ignore")
+    lines = sse_text.split("\n")
+    new_pending_sse_line = lines.pop()
+    return new_pending_sse_line, _remember_response_route_from_sse_lines(
+        [line.rstrip("\r") for line in lines],
+        backend_server_url,
+        backend_api_key,
+    )
+
+
+def _remember_response_route_from_sse_lines(
+    lines: list[str],
+    backend_server_url: str,
+    backend_api_key: str | None,
+) -> bool:
+    for line in lines:
+        payload = _parse_sse_data(line)
+        if isinstance(payload, Mapping) and _remember_response_route_from_payload(
+            payload,
+            backend_server_url,
+            backend_api_key,
+        ):
+            return True
+    return False
+
+
+def _remember_response_route_from_payload(
+    payload: Mapping[str, Any],
+    backend_server_url: str,
+    backend_api_key: str | None,
+) -> bool:
+    response_id = _extract_response_id(payload)
+    if response_id is None:
+        return False
+
+    runtime_state.remember_response_route(
+        response_id,
+        backend_server_url,
+        backend_api_key,
+    )
+    logger.debug("Tracked response {} -> {}", response_id, backend_server_url)
+    return True
+
+
+def _extract_response_id(payload: Mapping[str, Any]) -> str | None:
+    response_id = payload.get("id")
+    if isinstance(response_id, str) and response_id:
+        return response_id
+
+    nested_response = payload.get("response")
+    if isinstance(nested_response, Mapping):
+        nested_response_id = nested_response.get("id")
+        if isinstance(nested_response_id, str) and nested_response_id:
+            return nested_response_id
+
+    return None

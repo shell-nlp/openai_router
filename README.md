@@ -366,6 +366,8 @@ for chunk in stream:
 除了 `/v1/models` 之外，Router 还会转发这些常见 OpenAI 风格接口：
 
 - `POST /v1/responses`
+- `GET /v1/responses/{response_id}`
+- `POST /v1/responses/{response_id}/cancel`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 - `POST /v1/embeddings`
@@ -378,6 +380,10 @@ for chunk in stream:
 - `POST /v1/rerank`
 - `POST /tokenize`
 - `POST /detokenize`
+
+`GET /v1/responses/{response_id}` 和 `POST /v1/responses/{response_id}/cancel` 会根据 Router 在创建
+`POST /v1/responses` 时记录的 `response_id -> backend` 映射进行转发，因此要求创建、查询、取消请求经过同一个
+Router 进程；如果 Router 重启，这类映射会失效。
 
 ---
 
