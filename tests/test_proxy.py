@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from pathlib import Path
 import sys
@@ -11,6 +12,7 @@ from starlette.requests import Request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openai_router.proxy import (
+    apply_request_param_mapping,
     build_backend_url,
     build_proxy_headers,
     filter_response_headers,
@@ -20,6 +22,7 @@ from openai_router.proxy import (
     stream_proxy,
 )
 from openai_router.runtime import runtime_state
+from openai_router.services import RoutingTarget
 
 
 class AsyncByteStream(httpx.AsyncByteStream):
@@ -115,14 +118,17 @@ class ProxyHelpersTest(unittest.TestCase):
         mock_get_routing_target,
     ) -> None:
         mock_get_routing_target.return_value = (
-            "http://backend-1/v1",
-            ["gpt-4", "gpt-4o-latest"],
-            "key-1",
-            "gpt-4",
+            RoutingTarget(
+                "http://backend-1/v1",
+                ("gpt-4", "gpt-4o-latest"),
+                "key-1",
+                "gpt-4",
+                '{"enable_thinking":"chat_template_kwargs.enable_thinking"}',
+            )
         )
         request = build_json_request(
             [(b"content-type", b"application/json")],
-            b'{"model":"gpt-4o-latest","messages":[]}',
+            b'{"model":"gpt-4o-latest","messages":[],"enable_thinking":false}',
         )
 
         resolved = asyncio.run(resolve_route_request(request))
@@ -131,6 +137,35 @@ class ProxyHelpersTest(unittest.TestCase):
         self.assertEqual(resolved.backend_api_key, "key-1")
         self.assertEqual(resolved.routed_model_name, "gpt-4")
         self.assertEqual(resolved.json_body["model"], "gpt-4")
+        self.assertEqual(
+            resolved.json_body["chat_template_kwargs"],
+            {"enable_thinking": False},
+        )
+        self.assertNotIn("enable_thinking", resolved.json_body)
+
+    def test_apply_request_param_mapping_moves_nested_value(self) -> None:
+        payload = {
+            "enable_thinking": False,
+            "metadata": {"request": {"trace_id": "req_1"}},
+        }
+
+        mapped = apply_request_param_mapping(
+            payload,
+            json.dumps(
+                {
+                    "enable_thinking": "chat_template_kwargs.enable_thinking",
+                    "metadata.request.trace_id": "request_metadata.trace_id",
+                }
+            ),
+        )
+
+        self.assertEqual(
+            mapped,
+            {
+                "chat_template_kwargs": {"enable_thinking": False},
+                "request_metadata": {"trace_id": "req_1"},
+            },
+        )
 
     def test_resolve_response_request_uses_tracked_backend(self) -> None:
         runtime_state.remember_response_route(

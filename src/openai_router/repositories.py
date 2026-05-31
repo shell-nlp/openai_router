@@ -153,7 +153,12 @@ def update_backend_source_sync_status(
         session.commit()
 
 
-def upsert_route(model_name: str, model_url: str, api_key: str | None) -> tuple[bool, ModelRoute]:
+def upsert_route(
+    model_name: str,
+    model_url: str,
+    api_key: str | None,
+    request_param_mapping: str | None = None,
+) -> tuple[bool, ModelRoute]:
     with Session(get_engine()) as session:
         statement = select(ModelRoute).where(
             ModelRoute.model_name == model_name,
@@ -163,9 +168,15 @@ def upsert_route(model_name: str, model_url: str, api_key: str | None) -> tuple[
         created = route is None
 
         if route is None:
-            route = ModelRoute(model_name=model_name, model_url=model_url, api_key=api_key)
+            route = ModelRoute(
+                model_name=model_name,
+                model_url=model_url,
+                api_key=api_key,
+                request_param_mapping=request_param_mapping,
+            )
         else:
             route.api_key = api_key
+            route.request_param_mapping = request_param_mapping
             route.auto_managed = False
             route.source_id = None
 

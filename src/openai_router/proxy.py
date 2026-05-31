@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -57,31 +58,55 @@ async def resolve_route_request(request: Request) -> ResolvedRouteRequest:
         logger.error("Failed to parse request body: {}", exc)
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
+    original_json_body = deepcopy(json_body)
     model_name = json_body.get("model")
     if model_name is None:
         raise HTTPException(status_code=400, detail="'model' field is required in request body")
 
-    server, available_models, backend_api_key, routed_model_name = await run_in_threadpool(
+    logger.debug(
+        "Original request body for model {}: {}",
+        model_name,
+        _serialize_json_body_for_logging(original_json_body),
+    )
+
+    routing_target = await run_in_threadpool(
         route_service.get_routing_target,
         model_name,
         json_body,
         dict(request.headers),
     )
-    if server is None:
+    if routing_target.backend_server_url is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid model: {model_name}. Available models: {available_models}",
+            detail=(
+                f"Invalid model: {model_name}. "
+                f"Available models: {list(routing_target.available_model_names)}"
+            ),
         )
 
-    backend_url = build_backend_url(server, request.url.path)
-    json_body["model"] = routed_model_name
+    backend_url = build_backend_url(routing_target.backend_server_url, request.url.path)
+    try:
+        json_body = apply_request_param_mapping(json_body, routing_target.request_param_mapping)
+    except ValueError as exc:
+        logger.error("Invalid request parameter mapping for model {}: {}", model_name, exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Invalid request parameter mapping configuration for routed model",
+        ) from exc
+
+    json_body["model"] = routing_target.routed_model_name
+    logger.debug(
+        "Final proxied request body for model {}: {}",
+        model_name,
+        _serialize_json_body_for_logging(json_body),
+    )
     logger.info("Routing to backend_url: {} for model {}", backend_url, model_name)
     return ResolvedRouteRequest(
-        backend_server_url=server,
+        backend_server_url=routing_target.backend_server_url,
         backend_url=backend_url,
         json_body=json_body,
-        backend_api_key=backend_api_key,
-        routed_model_name=routed_model_name,
+        backend_api_key=routing_target.backend_api_key,
+        routed_model_name=routing_target.routed_model_name,
     )
 
 
@@ -300,6 +325,39 @@ def build_backend_url(server: str, path: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, resolved_path, "", ""))
 
 
+def apply_request_param_mapping(
+    json_body: dict[str, Any],
+    request_param_mapping: str | None,
+) -> dict[str, Any]:
+    if not request_param_mapping:
+        return json_body
+
+    try:
+        raw_mapping = json.loads(request_param_mapping)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Mapping configuration is not valid JSON.") from exc
+
+    if not isinstance(raw_mapping, dict):
+        raise ValueError("Mapping configuration must be a JSON object.")
+
+    for raw_source_path, raw_target_path in raw_mapping.items():
+        if not isinstance(raw_source_path, str) or not isinstance(raw_target_path, str):
+            raise ValueError("Mapping configuration keys and values must be strings.")
+
+        source_segments = _split_request_param_path(raw_source_path)
+        target_segments = _split_request_param_path(raw_target_path)
+        found, value = _pop_nested_value(json_body, source_segments)
+        if not found:
+            continue
+        _set_nested_value(json_body, target_segments, value)
+
+    return json_body
+
+
+def _serialize_json_body_for_logging(json_body: Mapping[str, Any]) -> str:
+    return json.dumps(json_body, ensure_ascii=False, sort_keys=True)
+
+
 def build_proxy_headers(request: Request, backend_api_key: str | None) -> dict[str, str]:
     headers = {
         name: value
@@ -327,6 +385,63 @@ def get_http_client() -> httpx.AsyncClient:
     if runtime_state.client is None:
         raise RuntimeError("HTTP client is not initialized.")
     return runtime_state.client
+
+
+def _split_request_param_path(path: str) -> list[str]:
+    segments = [segment.strip() for segment in path.split(".")]
+    if any(not segment for segment in segments):
+        raise ValueError(f"Invalid request parameter mapping path: '{path}'.")
+    return segments
+
+
+def _pop_nested_value(
+    json_body: dict[str, Any],
+    path_segments: list[str],
+) -> tuple[bool, Any]:
+    current: Any = json_body
+    parents: list[tuple[dict[str, Any], str]] = []
+
+    for segment in path_segments[:-1]:
+        if not isinstance(current, dict):
+            return False, None
+        next_value = current.get(segment)
+        if not isinstance(next_value, dict):
+            return False, None
+        parents.append((current, segment))
+        current = next_value
+
+    if not isinstance(current, dict):
+        return False, None
+
+    leaf_key = path_segments[-1]
+    if leaf_key not in current:
+        return False, None
+
+    value = current.pop(leaf_key)
+    for parent, parent_key in reversed(parents):
+        child = parent.get(parent_key)
+        if isinstance(child, dict) and not child:
+            parent.pop(parent_key, None)
+            continue
+        break
+
+    return True, value
+
+
+def _set_nested_value(
+    json_body: dict[str, Any],
+    path_segments: list[str],
+    value: Any,
+) -> None:
+    current = json_body
+    for segment in path_segments[:-1]:
+        next_value = current.get(segment)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[segment] = next_value
+        current = next_value
+
+    current[path_segments[-1]] = value
 
 
 def _should_track_response_route(

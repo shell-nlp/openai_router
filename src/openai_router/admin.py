@@ -1,3 +1,6 @@
+import json
+from typing import Any
+
 import gradio as gr
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
@@ -6,6 +9,12 @@ from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
 ADMIN_CSS = "footer {display: none !important}"
+
+ROUTE_MAPPING_COLUMN_INDEX = 4
+ROUTE_MODE_COLUMN_INDEX = 5
+BACKEND_SOURCE_SYNC_INTERVAL_COLUMN_INDEX = 2
+BACKEND_SOURCE_EXCLUSIONS_COLUMN_INDEX = 5
+REQUEST_PARAM_MAPPING_HEADERS = ["原参数路径 (key)", "目标参数路径 (value)"]
 
 
 async def get_current_routes() -> list[list[str]]:
@@ -28,11 +37,85 @@ async def refresh_admin_tables() -> tuple[list[list[str]], list[list[str]]]:
     return await get_current_routes(), await get_current_backend_sources()
 
 
+def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
+    if rows is None:
+        return []
+
+    if isinstance(rows, pd.DataFrame):
+        values = rows.values.tolist()
+    else:
+        values = rows
+
+    if not isinstance(values, list):
+        return []
+
+    normalized_rows: list[list[str]] = []
+    for row in values:
+        if not isinstance(row, (list, tuple)):
+            continue
+        source = ""
+        target = ""
+        if len(row) > 0 and not pd.isna(row[0]):
+            source = str(row[0]).strip()
+        if len(row) > 1 and not pd.isna(row[1]):
+            target = str(row[1]).strip()
+        if source or target:
+            normalized_rows.append([source, target])
+
+    return normalized_rows
+
+
+def serialize_request_param_mapping_rows(rows: Any) -> str:
+    normalized_rows = _normalize_request_param_mapping_rows(rows)
+    if not normalized_rows:
+        return ""
+
+    mapping: dict[str, str] = {}
+    for source, target in normalized_rows:
+        if not source or not target:
+            raise ValueError("请求参数映射的每一行都必须同时填写 key 和 value。")
+        if source in mapping:
+            raise ValueError(f"请求参数映射存在重复的 key: '{source}'")
+        mapping[source] = target
+
+    return json.dumps(mapping, ensure_ascii=False, separators=(",", ":"))
+
+
+def deserialize_request_param_mapping_text(request_param_mapping_text: str | None) -> list[list[str]]:
+    if request_param_mapping_text is None:
+        return [["", ""]]
+
+    normalized_text = request_param_mapping_text.strip()
+    if not normalized_text:
+        return [["", ""]]
+
+    raw_mapping = json.loads(normalized_text)
+    if not isinstance(raw_mapping, dict):
+        raise ValueError("请求参数映射必须是 JSON 对象。")
+
+    rows = [[str(source), str(target)] for source, target in raw_mapping.items()]
+    return rows or [["", ""]]
+
+
+def add_request_param_mapping_row(rows: Any) -> list[list[str]]:
+    normalized_rows = _normalize_request_param_mapping_rows(rows)
+    normalized_rows.append(["", ""])
+    return normalized_rows
+
+
+def remove_request_param_mapping_row(rows: Any) -> list[list[str]]:
+    normalized_rows = _normalize_request_param_mapping_rows(rows)
+    if len(normalized_rows) <= 1:
+        return [["", ""]]
+    return normalized_rows[:-1]
+
+
 async def add_or_update_route(
     model_name: str,
     aliases_text: str | None,
     model_url: str,
     api_key: str | None,
+    request_param_mapping_rows: Any,
 ) -> tuple[str, list[list[str]], list[list[str]]]:
     if not model_name or not model_name.strip():
         routes, sources = await refresh_admin_tables()
@@ -42,12 +125,16 @@ async def add_or_update_route(
         return "后端 URL 不能为空", routes, sources
 
     try:
+        request_param_mapping_text = serialize_request_param_mapping_rows(
+            request_param_mapping_rows
+        )
         status_message = await run_in_threadpool(
             route_service.add_or_update_route,
             model_name,
             aliases_text or "",
             model_url,
             api_key,
+            request_param_mapping_text,
         )
     except ValueError as exc:
         routes, sources = await refresh_admin_tables()
@@ -132,17 +219,31 @@ async def update_routing_policy(routing_policy: str) -> str:
         return str(exc)
 
 
-def on_select_route(routes_data: pd.DataFrame, evt: gr.SelectData) -> tuple[str, str, str, str]:
+def on_select_route(
+    routes_data: pd.DataFrame,
+    evt: gr.SelectData,
+) -> tuple[str, str, str, str, list[list[str]]]:
     if evt.index is None:
-        return "", "", "", ""
+        return "", "", "", "", [["", ""]]
 
     selected_row = routes_data.iloc[evt.index[0]]
-    model_name = selected_row.iloc[0]
-    aliases_text = selected_row.iloc[1]
-    if pd.isna(aliases_text):
-        aliases_text = ""
-    model_url = selected_row.iloc[2]
-    return model_name, aliases_text, model_url, ""
+    model_name = str(selected_row.iloc[0])
+    aliases_text = "" if pd.isna(selected_row.iloc[1]) else str(selected_row.iloc[1])
+    model_url = str(selected_row.iloc[2])
+    request_param_mapping_text = (
+        ""
+        if pd.isna(selected_row.iloc[ROUTE_MAPPING_COLUMN_INDEX])
+        else str(selected_row.iloc[ROUTE_MAPPING_COLUMN_INDEX])
+    )
+
+    try:
+        request_param_mapping_rows = deserialize_request_param_mapping_text(
+            request_param_mapping_text
+        )
+    except ValueError:
+        request_param_mapping_rows = [["", ""]]
+
+    return model_name, aliases_text, model_url, "", request_param_mapping_rows
 
 
 def on_select_backend_source(
@@ -153,11 +254,13 @@ def on_select_backend_source(
         return "", "", "", 15
 
     selected_row = sources_data.iloc[evt.index[0]]
-    model_url = selected_row.iloc[0]
-    excluded_models = selected_row.iloc[5]
-    if pd.isna(excluded_models):
-        excluded_models = ""
-    sync_interval = float(selected_row.iloc[2])
+    model_url = str(selected_row.iloc[0])
+    excluded_models = (
+        ""
+        if pd.isna(selected_row.iloc[BACKEND_SOURCE_EXCLUSIONS_COLUMN_INDEX])
+        else str(selected_row.iloc[BACKEND_SOURCE_EXCLUSIONS_COLUMN_INDEX])
+    )
+    sync_interval = float(selected_row.iloc[BACKEND_SOURCE_SYNC_INTERVAL_COLUMN_INDEX])
     return model_url, "", excluded_models, sync_interval
 
 
@@ -166,9 +269,19 @@ async def get_overview_data() -> tuple[str, str, str, str]:
     sources = await get_current_backend_sources()
     routing_policy = await get_current_routing_policy()
 
-    manual_routes = sum(1 for route in routes if len(route) > 4 and route[4] == "手动配置")
-    auto_routes = sum(1 for route in routes if len(route) > 4 and route[4] == "自动同步")
-    source_errors = sum(1 for source in sources if len(source) > 4 and str(source[4]).strip() not in {"", "-"})
+    manual_routes = sum(
+        1
+        for route in routes
+        if len(route) > ROUTE_MODE_COLUMN_INDEX and route[ROUTE_MODE_COLUMN_INDEX] == "手动配置"
+    )
+    auto_routes = sum(
+        1
+        for route in routes
+        if len(route) > ROUTE_MODE_COLUMN_INDEX and route[ROUTE_MODE_COLUMN_INDEX] == "自动同步"
+    )
+    source_errors = sum(
+        1 for source in sources if len(source) > 4 and str(source[4]).strip() not in {"", "-"}
+    )
 
     route_summary = f"共 {len(routes)} 条，手动 {manual_routes} 条，自动 {auto_routes} 条"
     source_summary = f"共 {len(sources)} 个，异常 {source_errors} 个"
@@ -180,12 +293,14 @@ async def add_or_update_route_page(
     aliases_text: str | None,
     model_url: str,
     api_key: str | None,
+    request_param_mapping_rows: Any,
 ) -> tuple[str, list[list[str]]]:
     status_message, routes, _ = await add_or_update_route(
         model_name,
         aliases_text,
         model_url,
         api_key,
+        request_param_mapping_rows,
     )
     return status_message, routes
 
@@ -227,11 +342,8 @@ async def delete_backend_source_page(
     return status_message, sources
 
 
-async def get_backend_config_page_data() -> tuple[str, list[list[str]], str]:
-    return (
-        await get_current_backend_sources(),
-        await get_current_routing_policy(),
-    )
+async def get_backend_config_page_data() -> tuple[list[list[str]], str]:
+    return await get_current_backend_sources(), await get_current_routing_policy()
 
 
 def _render_page_header(
@@ -254,8 +366,11 @@ def create_admin_ui() -> gr.Blocks:
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
         overview_base_url_output = _render_page_header(
             "模型路由",
-            """**将不同端口、不同服务的`openAI`接口通过统一的 URL 进行路由！兼容 `vLLM`、`SGLang`、`lmdeploy`、`Ollama` 等。**\n
-**已拆分为多页管理：** 模型路由、后端配置。""",
+            (
+                "将不同端口、不同服务的 OpenAI 兼容接口通过统一 URL 进行路由。"
+                "支持模型别名、后端 API Key 覆盖，以及模型级请求参数映射，"
+                "用于适配不同后端版本的请求体差异。"
+            ),
         )
         with gr.Row():
             route_summary_output = gr.Textbox(label="模型路由概况", interactive=False)
@@ -273,35 +388,48 @@ def create_admin_ui() -> gr.Blocks:
             with gr.Column(scale=2):
                 routes_datagrid = gr.DataFrame(
                     headers=[
-                        "模型名称 (Model Name)",
-                        "模型别名 (Aliases)",
-                        "后端 URL (Backend URL)",
-                        "API 密钥 (API Key)",
-                        "管理方式 (Mode)",
+                        "模型名称",
+                        "模型别名",
+                        "后端 URL",
+                        "API 密钥",
+                        "请求参数映射 (JSON)",
+                        "管理方式",
                         "同步间隔 (Min)",
                         "最后同步 (UTC)",
                     ],
                     label="模型路由",
                     row_count=1,
-                    column_count=7,
+                    column_count=8,
                     interactive=False,
                 )
             with gr.Column(scale=1):
-                model_name_input = gr.Textbox(label="模型名称", value="gpt4")
+                model_name_input = gr.Textbox(label="模型名称", value="gpt-4")
                 aliases_input = gr.Textbox(
                     label="模型别名",
                     value="",
-                    info="可选。多个别名请用英文逗号分隔，例如：gpt-4o-latest,my-gpt4o。",
+                    info="可选。多个别名请用英文逗号分隔。",
                 )
-                model_url_input = gr.Textbox(
-                    label="后端 URL",
-                    value="http://localhost:8082",
-                )
+                model_url_input = gr.Textbox(label="后端 URL", value="http://localhost:8082")
                 route_api_key_input = gr.Textbox(
                     label="后端 API 密钥 (可选)",
-                    info="如果提供，路由器将使用此密钥覆盖原始请求中的 Authorization 标头。如果留空，将透传原始请求的密钥。",
+                    info="如果填写，将覆盖原始请求中的 Authorization 请求头；留空则透传原请求。",
                     type="password",
                 )
+                request_param_mapping_input = gr.DataFrame(
+                    headers=REQUEST_PARAM_MAPPING_HEADERS,
+                    value=[["", ""]],
+                    row_count=1,
+                    column_count=2,
+                    interactive=True,
+                    label="请求参数映射",
+                )
+                gr.Markdown(
+                    "每一行表示一条映射规则：左侧填原参数路径，右侧填目标参数路径。"
+                    "例如把 `enable_thinking` 移动到 `chat_template_kwargs.enable_thinking`。"
+                )
+                with gr.Row():
+                    add_mapping_row_button = gr.Button("添加映射行")
+                    remove_mapping_row_button = gr.Button("删除映射行")
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新路由")
                     delete_button = gr.Button("删除路由", variant="stop")
@@ -315,6 +443,7 @@ def create_admin_ui() -> gr.Blocks:
                 routing_policy_summary_output,
             ],
         )
+        admin_ui.load(get_current_routes, outputs=routes_datagrid)
         refresh_overview_button.click(
             get_overview_data,
             outputs=[
@@ -324,10 +453,16 @@ def create_admin_ui() -> gr.Blocks:
                 routing_policy_summary_output,
             ],
         )
-        admin_ui.load(get_current_routes, outputs=routes_datagrid)
-        refresh_overview_button.click(
-            get_current_routes,
-            outputs=routes_datagrid,
+        refresh_overview_button.click(get_current_routes, outputs=routes_datagrid)
+        add_mapping_row_button.click(
+            add_request_param_mapping_row,
+            inputs=[request_param_mapping_input],
+            outputs=[request_param_mapping_input],
+        )
+        remove_mapping_row_button.click(
+            remove_request_param_mapping_row,
+            inputs=[request_param_mapping_input],
+            outputs=[request_param_mapping_input],
         )
         add_update_button.click(
             add_or_update_route_page,
@@ -336,6 +471,7 @@ def create_admin_ui() -> gr.Blocks:
                 aliases_input,
                 model_url_input,
                 route_api_key_input,
+                request_param_mapping_input,
             ],
             outputs=[routes_status_output, routes_datagrid],
         )
@@ -347,13 +483,22 @@ def create_admin_ui() -> gr.Blocks:
         routes_datagrid.select(
             on_select_route,
             inputs=[routes_datagrid],
-            outputs=[model_name_input, aliases_input, model_url_input, route_api_key_input],
+            outputs=[
+                model_name_input,
+                aliases_input,
+                model_url_input,
+                route_api_key_input,
+                request_param_mapping_input,
+            ],
         )
 
     with admin_ui.route("后端配置", "/sources") as sources_page:
         gr.Navbar(main_page_name="模型路由")
         gr.Markdown("## 后端配置")
-        gr.Markdown("当前页面用于管理全局路由策略和自动同步后端源。保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。")
+        gr.Markdown(
+            "当前页面用于管理全局路由策略和自动同步后端源。"
+            "保存后会立即拉取一次 `/v1/models`，之后按设定间隔自动同步。"
+        )
         sources_status_output = gr.Textbox(
             label="操作状态",
             interactive=False,
@@ -366,8 +511,7 @@ def create_admin_ui() -> gr.Blocks:
             value="round_robin",
             info=(
                 "consistent_hash 会优先使用 X-Session-ID / X-User-ID 等请求头，"
-                "其次使用 session_params.session_id、user、session_id、user_id，"
-                "将同一会话稳定路由到同一后端。"
+                "其次回退到请求体字段。"
             ),
         )
         save_policy_button = gr.Button("保存路由策略")
@@ -376,24 +520,21 @@ def create_admin_ui() -> gr.Blocks:
             with gr.Column(scale=2):
                 backend_sources_datagrid = gr.DataFrame(
                     headers=[
-                        "后端源 URL (Backend Source URL)",
-                        "API 密钥 (API Key)",
+                        "后端源 URL",
+                        "API 密钥",
                         "同步间隔 (Min)",
                         "最后同步 (UTC)",
-                        "最后错误 (Last Error)",
-                        "排除模型 (Excluded Models)",
+                        "最后错误",
+                        "排除模型",
                     ],
-                        label="后端配置",
+                    label="后端配置",
                     row_count=1,
                     column_count=6,
                     interactive=False,
                 )
             with gr.Column(scale=1):
                 gr.Markdown("### 自动同步后端源")
-                source_url_input = gr.Textbox(
-                    label="后端源 URL",
-                    value="http://localhost:8082",
-                )
+                source_url_input = gr.Textbox(label="后端源 URL", value="http://localhost:8082")
                 source_api_key_input = gr.Textbox(
                     label="后端源 API 密钥 (可选)",
                     type="password",
@@ -401,7 +542,10 @@ def create_admin_ui() -> gr.Blocks:
                 source_excluded_models_input = gr.Textbox(
                     label="排除模型",
                     value="",
-                    info="可选。多个模型请用逗号分隔；这些模型即使出现在 `/v1/models` 中，也不会被自动导入。",
+                    info=(
+                        "可选。多个模型请用英文逗号分隔；这些模型即使出现在 `/v1/models` 中，"
+                        "也不会被自动导入。"
+                    ),
                 )
                 sync_interval_minutes_input = gr.Number(
                     label="自动同步间隔（分钟）",
@@ -409,7 +553,9 @@ def create_admin_ui() -> gr.Blocks:
                     minimum=1,
                     precision=0,
                 )
-                gr.Markdown("删除后端源时，会一并清理该后端源自动生成的路由；手动路由不会受影响。")
+                gr.Markdown(
+                    "删除后端源时，会一并清理该后端源自动生成的路由；手动路由不会受影响。"
+                )
                 with gr.Row():
                     add_update_source_button = gr.Button("添加 / 更新后端配置")
                     sync_source_button = gr.Button("立即同步")
@@ -417,10 +563,7 @@ def create_admin_ui() -> gr.Blocks:
 
         sources_page.load(
             get_backend_config_page_data,
-            outputs=[
-                backend_sources_datagrid,
-                routing_policy_input,
-            ],
+            outputs=[backend_sources_datagrid, routing_policy_input],
         )
         add_update_source_button.click(
             add_or_update_backend_source_page,

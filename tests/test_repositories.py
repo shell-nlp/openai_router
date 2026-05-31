@@ -83,6 +83,22 @@ class RepositorySyncExclusionTest(unittest.TestCase):
 
         self.assertEqual(repositories.list_excluded_model_names(source_id), [])
 
+    def test_upsert_route_persists_request_param_mapping(self) -> None:
+        repositories.upsert_route(
+            "mapped-model",
+            "http://backend/v1",
+            "backend-key",
+            '{"enable_thinking":"chat_template_kwargs.enable_thinking"}',
+        )
+
+        routes = repositories.list_routes_by_model("mapped-model")
+
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(
+            routes[0].request_param_mapping,
+            '{"enable_thinking":"chat_template_kwargs.enable_thinking"}',
+        )
+
     def test_delete_backend_source_removes_auto_managed_routes_only(self) -> None:
         with Session(runtime_state.engine) as session:
             source = BackendSource(model_url="http://backend/v1", sync_interval_minutes=15)

@@ -25,6 +25,7 @@ class ModelRoute(SQLModel, table=True):
     model_name: str = Field(index=True)
     model_url: str
     api_key: str | None = Field(default=None)
+    request_param_mapping: str | None = Field(default=None)
     auto_managed: bool = Field(default=False, nullable=False)
     source_id: int | None = Field(default=None, foreign_key="backendsource.id", index=True)
     created: datetime = Field(

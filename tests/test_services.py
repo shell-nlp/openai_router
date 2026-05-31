@@ -7,7 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openai_router.models import BackendSource, ModelRoute
-from openai_router.services import RouteService
+from openai_router.services import RouteService, RoutingTarget
 
 
 class RouteServiceTest(unittest.TestCase):
@@ -33,8 +33,14 @@ class RouteServiceTest(unittest.TestCase):
         first = self.service.get_routing_target("gpt-4")
         second = self.service.get_routing_target("gpt-4")
 
-        self.assertEqual(first, ("http://backend-1/v1", ["gpt-4"], "key-1", "gpt-4"))
-        self.assertEqual(second, ("http://backend-2/v1", ["gpt-4"], "key-2", "gpt-4"))
+        self.assertEqual(
+            first,
+            RoutingTarget("http://backend-1/v1", ("gpt-4",), "key-1", "gpt-4", None),
+        )
+        self.assertEqual(
+            second,
+            RoutingTarget("http://backend-2/v1", ("gpt-4",), "key-2", "gpt-4", None),
+        )
 
     @patch("openai_router.services.repositories.get_router_setting")
     @patch("openai_router.services.repositories.list_model_aliases")
@@ -57,7 +63,13 @@ class RouteServiceTest(unittest.TestCase):
 
         self.assertEqual(
             resolved,
-            ("http://backend-1/v1", ["gpt-4", "gpt-4o-latest"], "key-1", "gpt-4"),
+            RoutingTarget(
+                "http://backend-1/v1",
+                ("gpt-4", "gpt-4o-latest"),
+                "key-1",
+                "gpt-4",
+                None,
+            ),
         )
 
     @patch("openai_router.services.repositories.get_router_setting")
@@ -97,9 +109,12 @@ class RouteServiceTest(unittest.TestCase):
             {"x-session-id": "session-456"},
         )
 
-        self.assertEqual(first[0], second[0])
-        self.assertEqual(first[2], second[2])
-        self.assertIn(third[0], {first[0], "http://backend-2/v1", "http://backend-3/v1"})
+        self.assertEqual(first.backend_server_url, second.backend_server_url)
+        self.assertEqual(first.backend_api_key, second.backend_api_key)
+        self.assertIn(
+            third.backend_server_url,
+            {first.backend_server_url, "http://backend-2/v1", "http://backend-3/v1"},
+        )
 
     @patch("openai_router.services.repositories.get_router_setting")
     @patch("openai_router.services.repositories.list_model_aliases")
@@ -197,6 +212,19 @@ class RouteServiceTest(unittest.TestCase):
         normalized = self.service._normalize_backend_url(" http://localhost:8000/v1/ ")
         self.assertEqual(normalized, "http://localhost:8000/v1")
 
+    def test_normalize_request_param_mapping(self) -> None:
+        normalized = self.service._normalize_request_param_mapping(
+            '{ "enable_thinking": "chat_template_kwargs.enable_thinking" }'
+        )
+        self.assertEqual(
+            normalized,
+            '{"enable_thinking":"chat_template_kwargs.enable_thinking"}',
+        )
+
+    def test_normalize_request_param_mapping_rejects_invalid_json(self) -> None:
+        with self.assertRaisesRegex(ValueError, "valid JSON"):
+            self.service._normalize_request_param_mapping("{invalid}")
+
     def test_build_model_discovery_urls_for_v1_backend(self) -> None:
         urls = self.service._build_model_discovery_urls("http://localhost:8000/v1")
         self.assertEqual(urls, ["http://localhost:8000/v1/models"])
@@ -272,7 +300,7 @@ class RouteServiceTest(unittest.TestCase):
     @patch("openai_router.services.repositories.get_alias")
     @patch("openai_router.services.repositories.model_has_routes")
     @patch.object(RouteService, "refresh_routing_cache")
-    def test_add_or_update_route_saves_aliases(
+    def test_add_or_update_route_saves_aliases_and_request_mapping(
         self,
         mock_refresh_routing_cache,
         mock_model_has_routes,
@@ -293,8 +321,15 @@ class RouteServiceTest(unittest.TestCase):
             "gpt-4o-latest, my-gpt4",
             "http://backend-1/v1",
             "key-1",
+            '{ "enable_thinking": "chat_template_kwargs.enable_thinking" }',
         )
 
+        mock_upsert_route.assert_called_once_with(
+            "gpt-4",
+            "http://backend-1/v1",
+            "key-1",
+            '{"enable_thinking":"chat_template_kwargs.enable_thinking"}',
+        )
         mock_replace_model_aliases.assert_called_once_with(
             "gpt-4",
             ["gpt-4o-latest", "my-gpt4"],

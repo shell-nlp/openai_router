@@ -34,6 +34,15 @@ class RoutingCacheSnapshot:
     routing_policy: str
 
 
+@dataclass(frozen=True)
+class RoutingTarget:
+    backend_server_url: str | None
+    available_model_names: tuple[str, ...]
+    backend_api_key: str | None
+    routed_model_name: str | None
+    request_param_mapping: str | None
+
+
 class RouteService:
     def __init__(self) -> None:
         self._round_robin_counters = defaultdict(int)
@@ -51,7 +60,7 @@ class RouteService:
         model_name: str,
         request_payload: Mapping[str, Any] | None = None,
         request_headers: Mapping[str, str] | None = None,
-    ) -> tuple[str | None, list[str], str | None, str | None]:
+    ) -> RoutingTarget:
         cache = self._get_routing_cache()
         routes = cache.routes_by_model.get(model_name, ())
         resolved_model_name = model_name
@@ -61,7 +70,13 @@ class RouteService:
                 routes = cache.routes_by_model.get(resolved_model_name, ())
 
         if not routes:
-            return None, list(cache.available_model_names), None, None
+            return RoutingTarget(
+                backend_server_url=None,
+                available_model_names=cache.available_model_names,
+                backend_api_key=None,
+                routed_model_name=None,
+                request_param_mapping=None,
+            )
 
         selected_route = self._select_route(
             resolved_model_name,
@@ -69,11 +84,12 @@ class RouteService:
             request_payload,
             request_headers,
         )
-        return (
-            selected_route.model_url,
-            list(cache.available_model_names),
-            selected_route.api_key,
-            selected_route.model_name,
+        return RoutingTarget(
+            backend_server_url=selected_route.model_url,
+            available_model_names=cache.available_model_names,
+            backend_api_key=selected_route.api_key,
+            routed_model_name=selected_route.model_name,
+            request_param_mapping=selected_route.request_param_mapping,
         )
 
     def get_routing_policy(self) -> str:
@@ -131,6 +147,7 @@ class RouteService:
                     aliases_by_model.get(route.model_name, ""),
                     route.model_url,
                     masked_key,
+                    route.request_param_mapping or "",
                     mode,
                     sync_interval,
                     last_synced_at,
@@ -165,12 +182,16 @@ class RouteService:
         aliases_text: str | None,
         model_url: str,
         api_key: str | None,
+        request_param_mapping_text: str | None = None,
     ) -> str:
         normalized_model_url = self._normalize_backend_url(model_url)
         normalized_api_key = api_key.strip() if api_key else None
         normalized_api_key = normalized_api_key or None
         normalized_model_name = model_name.strip()
         normalized_aliases_text = aliases_text or ""
+        normalized_request_param_mapping = self._normalize_request_param_mapping(
+            request_param_mapping_text
+        )
 
         self._validate_model_name(normalized_model_name)
         normalized_aliases = self._normalize_aliases(normalized_aliases_text, normalized_model_name)
@@ -180,6 +201,7 @@ class RouteService:
             normalized_model_name,
             normalized_model_url,
             normalized_api_key,
+            normalized_request_param_mapping,
         )
         alias_result = repositories.replace_model_aliases(normalized_model_name, normalized_aliases)
 
@@ -360,8 +382,60 @@ class RouteService:
         )
 
     @staticmethod
+    def _normalize_request_param_mapping(request_param_mapping_text: str | None) -> str | None:
+        if request_param_mapping_text is None:
+            return None
+
+        normalized_text = request_param_mapping_text.strip()
+        if not normalized_text:
+            return None
+
+        try:
+            raw_mapping = json.loads(normalized_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Request parameter mapping must be valid JSON.") from exc
+
+        if not isinstance(raw_mapping, dict):
+            raise ValueError(
+                "Request parameter mapping must be a JSON object like "
+                '{"enable_thinking":"chat_template_kwargs.enable_thinking"}.'
+            )
+
+        normalized_mapping: dict[str, str] = {}
+        for raw_source_path, raw_target_path in raw_mapping.items():
+            if not isinstance(raw_source_path, str) or not isinstance(raw_target_path, str):
+                raise ValueError("Request parameter mapping keys and values must be strings.")
+
+            source_path = raw_source_path.strip()
+            target_path = raw_target_path.strip()
+            RouteService._validate_request_param_path(source_path, "source")
+            RouteService._validate_request_param_path(target_path, "target")
+            if source_path in normalized_mapping:
+                raise ValueError(f"Duplicate request parameter mapping source path: '{source_path}'.")
+            normalized_mapping[source_path] = target_path
+
+        return json.dumps(
+            normalized_mapping,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
     def _split_csv_like_text(value: str) -> list[str]:
         return value.replace("\n", ",").replace("，", ",").replace(";", ",").split(",")
+
+    @staticmethod
+    def _validate_request_param_path(path: str, role: str) -> None:
+        if not path:
+            raise ValueError(f"Request parameter mapping {role} path cannot be empty.")
+
+        segments = [segment.strip() for segment in path.split(".")]
+        if any(not segment for segment in segments):
+            raise ValueError(
+                f"Request parameter mapping {role} path '{path}' is invalid. "
+                "Use dot-separated object paths."
+            )
 
     @staticmethod
     def _validate_model_name(model_name: str) -> None:
