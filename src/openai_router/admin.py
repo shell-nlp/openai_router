@@ -63,6 +63,14 @@ async def get_recent_logs_page_data(levels: list[str] | None = None) -> tuple[st
 
 
 def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
+    return _coerce_request_param_mapping_rows(rows, include_empty=False)
+
+
+def _coerce_request_param_mapping_rows(
+    rows: Any,
+    *,
+    include_empty: bool,
+) -> list[list[str]]:
     if rows is None:
         return []
 
@@ -84,7 +92,7 @@ def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
             source = str(row[0]).strip()
         if len(row) > 1 and not pd.isna(row[1]):
             target = str(row[1]).strip()
-        if source or target:
+        if include_empty or source or target:
             normalized_rows.append([source, target])
 
     return normalized_rows
@@ -122,11 +130,18 @@ def deserialize_request_param_mapping_text(request_param_mapping_text: str | Non
     return rows or [["", ""]]
 
 
+def add_request_param_mapping_row(rows: Any) -> list[list[str]]:
+    visible_rows = _coerce_request_param_mapping_rows(rows, include_empty=True)
+    if not visible_rows:
+        visible_rows = [["", ""]]
+    return [*visible_rows, ["", ""]]
+
+
 def remove_request_param_mapping_row(rows: Any) -> list[list[str]]:
-    normalized_rows = _normalize_request_param_mapping_rows(rows)
-    if len(normalized_rows) <= 1:
+    visible_rows = _coerce_request_param_mapping_rows(rows, include_empty=True)
+    if len(visible_rows) <= 1:
         return [["", ""]]
-    return normalized_rows[:-1]
+    return visible_rows[:-1]
 
 
 async def add_or_update_route(
@@ -490,6 +505,7 @@ def create_admin_ui() -> gr.Blocks:
                     "例如把 `enable_thinking` 移动到 `chat_template_kwargs.enable_thinking`。"
                 )
                 with gr.Row():
+                    add_mapping_row_button = gr.Button("添加映射行")
                     remove_mapping_row_button = gr.Button("删除映射行")
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新路由")
@@ -515,6 +531,11 @@ def create_admin_ui() -> gr.Blocks:
             ],
         )
         refresh_overview_button.click(get_current_routes, outputs=routes_datagrid)
+        add_mapping_row_button.click(
+            add_request_param_mapping_row,
+            inputs=[request_param_mapping_input],
+            outputs=[request_param_mapping_input],
+        )
         remove_mapping_row_button.click(
             remove_request_param_mapping_row,
             inputs=[request_param_mapping_input],

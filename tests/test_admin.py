@@ -9,6 +9,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openai_router.admin import (
+    add_request_param_mapping_row,
     deserialize_request_param_mapping_text,
     get_recent_logs_page_data,
     on_select_route,
@@ -52,11 +53,42 @@ class AdminTest(unittest.TestCase):
             [["enable_thinking", "chat_template_kwargs.enable_thinking"]],
         )
 
+    def test_add_request_param_mapping_row(self) -> None:
+        rows = add_request_param_mapping_row(
+            [["enable_thinking", "chat_template_kwargs.enable_thinking"]]
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                ["enable_thinking", "chat_template_kwargs.enable_thinking"],
+                ["", ""],
+            ],
+        )
+
+    def test_add_request_param_mapping_row_keeps_existing_blank_rows(self) -> None:
+        rows = add_request_param_mapping_row([["", ""]])
+
+        self.assertEqual(rows, [["", ""], ["", ""]])
+
     def test_remove_request_param_mapping_row(self) -> None:
         rows = remove_request_param_mapping_row(
             [
                 ["enable_thinking", "chat_template_kwargs.enable_thinking"],
                 ["top_k", "sampling.top_k"],
+            ]
+        )
+
+        self.assertEqual(
+            rows,
+            [["enable_thinking", "chat_template_kwargs.enable_thinking"]],
+        )
+
+    def test_remove_request_param_mapping_row_removes_last_visible_blank_row(self) -> None:
+        rows = remove_request_param_mapping_row(
+            [
+                ["enable_thinking", "chat_template_kwargs.enable_thinking"],
+                ["", ""],
             ]
         )
 
