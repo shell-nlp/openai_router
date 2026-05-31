@@ -1,3 +1,4 @@
+import html
 import json
 from typing import Any
 
@@ -5,6 +6,7 @@ import gradio as gr
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
 
+from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, log_store
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -35,6 +37,24 @@ def get_router_base_url() -> str:
 
 async def refresh_admin_tables() -> tuple[list[list[str]], list[list[str]]]:
     return await get_current_routes(), await get_current_backend_sources()
+
+
+async def get_recent_logs_page_data() -> tuple[str, str]:
+    total_logs, lines = await run_in_threadpool(
+        log_store.snapshot,
+        DEFAULT_LOG_VIEW_LIMIT,
+    )
+    safe_logs = html.escape("\n".join(lines))
+    rendered_logs = (
+        "<div id='log-scrollbox' style='max-height: 70vh; overflow-y: auto; "
+        "background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; "
+        "border-radius: 8px; padding: 12px;'>"
+        "<pre style='margin: 0; font-family: monospace; font-size: 13px; "
+        "line-height: 1.5; white-space: pre-wrap; word-break: break-word;'>"
+        f"{safe_logs}</pre>"
+        "</div>"
+    )
+    return f"当前缓存 {total_logs} 条日志，显示最近 {len(lines)} 条", rendered_logs
 
 
 def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
@@ -354,9 +374,52 @@ def _render_page_header(
     return base_url_output
 
 
+def _render_top_right_button(label: str, link: str) -> None:
+    with gr.Row():
+        with gr.Column(scale=10):
+            gr.Markdown("")
+        with gr.Column(scale=1, min_width=140):
+            gr.Button(label, link=link, variant="secondary", size="sm")
+
+
+LOG_VIEWER_JS = """
+const scrollToBottom = () => {
+  const box = element.querySelector('#log-scrollbox');
+  if (box) {
+    box.scrollTop = box.scrollHeight;
+  }
+};
+
+const attachAutoScroll = () => {
+  if (element.__logAutoScrollObserver) {
+    element.__logAutoScrollObserver.disconnect();
+  }
+
+  element.__logAutoScrollObserver = new MutationObserver(() => {
+    requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
+  });
+
+  element.__logAutoScrollObserver.observe(element, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  scrollToBottom();
+};
+
+watch('value', () => {
+  requestAnimationFrame(() => requestAnimationFrame(attachAutoScroll));
+});
+
+attachAutoScroll();
+"""
+
+
 def create_admin_ui() -> gr.Blocks:
     with gr.Blocks(title="模型路由管理器") as admin_ui:
         gr.Navbar(main_page_name="模型路由")
+        _render_top_right_button("查看日志", "/logs")
         gr.Markdown("<h1 style='text-align:center;'>模型路由管理器</h1>", elem_id="title")
         overview_base_url_output = _render_page_header(
             "模型路由",
@@ -482,6 +545,7 @@ def create_admin_ui() -> gr.Blocks:
 
     with admin_ui.route("后端配置", "/sources") as sources_page:
         gr.Navbar(main_page_name="模型路由")
+        _render_top_right_button("查看日志", "/logs")
         gr.Markdown("## 后端配置")
         gr.Markdown(
             "当前页面用于管理全局路由策略和自动同步后端源。"
@@ -587,6 +651,34 @@ def create_admin_ui() -> gr.Blocks:
             update_routing_policy,
             inputs=[routing_policy_input],
             outputs=[sources_status_output],
+        )
+
+    with admin_ui.route("日志", "/logs") as logs_page:
+        gr.Navbar(main_page_name="模型路由")
+        _render_top_right_button("返回模型路由", "/")
+        gr.Markdown("## 实时日志")
+        gr.Markdown("页面每秒自动刷新一次，展示当前进程中的最近日志。")
+        logs_status_output = gr.Textbox(label="日志状态", interactive=False)
+        logs_output = gr.HTML(
+            label="最近日志",
+            autoscroll=False,
+            js_on_load=LOG_VIEWER_JS,
+            elem_id="live-log-output",
+        )
+        refresh_logs_button = gr.Button("立即刷新")
+        logs_timer = gr.Timer(1)
+
+        logs_page.load(
+            get_recent_logs_page_data,
+            outputs=[logs_status_output, logs_output],
+        )
+        logs_timer.tick(
+            get_recent_logs_page_data,
+            outputs=[logs_status_output, logs_output],
+        )
+        refresh_logs_button.click(
+            get_recent_logs_page_data,
+            outputs=[logs_status_output, logs_output],
         )
 
     return admin_ui

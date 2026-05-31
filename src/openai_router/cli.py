@@ -9,6 +9,7 @@ import uvicorn
 from loguru import logger
 
 from openai_router.app import app
+from openai_router.log_store import loguru_sink
 from openai_router.runtime import runtime_state
 
 
@@ -18,6 +19,11 @@ cli_app = typer.Typer()
 def _configure_logging() -> None:
     logger.remove()
     logger.add(sys.stderr, level="INFO")
+    logger.add(
+        loguru_sink,
+        level="INFO",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
+    )
 
 
 @cli_app.command()

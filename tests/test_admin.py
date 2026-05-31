@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 import sys
@@ -9,13 +10,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openai_router.admin import (
     deserialize_request_param_mapping_text,
+    get_recent_logs_page_data,
     on_select_route,
     remove_request_param_mapping_row,
     serialize_request_param_mapping_rows,
 )
+from openai_router.log_store import log_store
 
 
 class AdminTest(unittest.TestCase):
+    def setUp(self) -> None:
+        log_store.clear()
+
+    def tearDown(self) -> None:
+        log_store.clear()
+
     def test_serialize_request_param_mapping_rows(self) -> None:
         serialized = serialize_request_param_mapping_rows(
             [
@@ -84,6 +93,16 @@ class AdminTest(unittest.TestCase):
                 [["enable_thinking", "chat_template_kwargs.enable_thinking"]],
             ),
         )
+
+    def test_get_recent_logs_page_data(self) -> None:
+        log_store.append("2026-05-31 12:00:00.000 | INFO     | hello")
+        log_store.append("2026-05-31 12:00:01.000 | ERROR    | world")
+
+        status, logs = asyncio.run(get_recent_logs_page_data())
+
+        self.assertIn("当前缓存 2 条日志", status)
+        self.assertIn("hello", logs)
+        self.assertIn("world", logs)
 
 
 if __name__ == "__main__":
