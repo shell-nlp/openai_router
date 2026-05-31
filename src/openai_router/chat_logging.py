@@ -66,14 +66,20 @@ def _extract_stream_content(chunks: list[bytes]) -> str | None:
                     content = delta.get("content")
                     if content:
                         content_parts.append(content)
-                    reasoning = delta.get("reasoning") or delta.get("thinking")
+                    reasoning = (
+                        delta.get("reasoning_content")
+                        or delta.get("reasoning")
+                        or delta.get("thinking")
+                    )
                     if reasoning:
                         reasoning_parts.append(reasoning)
         except Exception:
             continue
 
     if reasoning_parts:
-        return f"<think>\n{''.join(reasoning_parts)}\n</think>\n{''.join(content_parts)}"
+        return (
+            f"<think>\n{''.join(reasoning_parts)}\n</think>\n{''.join(content_parts)}"
+        )
     elif content_parts:
         return "".join(content_parts)
     return None
@@ -100,4 +106,6 @@ async def _stream_backend_response_with_logging(
     except runtime_state.client.timeout.ReadTimeout:
         logger.error("Read timeout while streaming from backend {}: {}", backend_url)
     except Exception as exc:
-        logger.exception("An error occurred while streaming from backend {}: {}", backend_url, exc)
+        logger.exception(
+            "An error occurred while streaming from backend {}: {}", backend_url, exc
+        )
