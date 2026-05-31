@@ -1,3 +1,4 @@
+import sys
 import time
 import webbrowser
 import socket
@@ -14,11 +15,17 @@ from openai_router.runtime import runtime_state
 cli_app = typer.Typer()
 
 
+def _configure_logging() -> None:
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
+
 @cli_app.command()
 def main(
     host: Annotated[str, typer.Option(help="指定监听的主机地址", show_default=True)] = "0.0.0.0",
     port: Annotated[int, typer.Option(help="指定监听的主机端口", show_default=True)] = 28000,
 ) -> None:
+    _configure_logging()
     display_host = _get_display_host(host)
     base_url = f"http://{host}:{port}"
     display_base_url = f"http://{display_host}:{port}"
