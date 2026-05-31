@@ -97,12 +97,6 @@ def deserialize_request_param_mapping_text(request_param_mapping_text: str | Non
     return rows or [["", ""]]
 
 
-def add_request_param_mapping_row(rows: Any) -> list[list[str]]:
-    normalized_rows = _normalize_request_param_mapping_rows(rows)
-    normalized_rows.append(["", ""])
-    return normalized_rows
-
-
 def remove_request_param_mapping_row(rows: Any) -> list[list[str]]:
     normalized_rows = _normalize_request_param_mapping_rows(rows)
     if len(normalized_rows) <= 1:
@@ -418,7 +412,7 @@ def create_admin_ui() -> gr.Blocks:
                 request_param_mapping_input = gr.DataFrame(
                     headers=REQUEST_PARAM_MAPPING_HEADERS,
                     value=[["", ""]],
-                    row_count=1,
+                    row_count=(1, "dynamic"),
                     column_count=2,
                     interactive=True,
                     label="请求参数映射",
@@ -428,7 +422,6 @@ def create_admin_ui() -> gr.Blocks:
                     "例如把 `enable_thinking` 移动到 `chat_template_kwargs.enable_thinking`。"
                 )
                 with gr.Row():
-                    add_mapping_row_button = gr.Button("添加映射行")
                     remove_mapping_row_button = gr.Button("删除映射行")
                 with gr.Row():
                     add_update_button = gr.Button("添加 / 更新路由")
@@ -454,11 +447,6 @@ def create_admin_ui() -> gr.Blocks:
             ],
         )
         refresh_overview_button.click(get_current_routes, outputs=routes_datagrid)
-        add_mapping_row_button.click(
-            add_request_param_mapping_row,
-            inputs=[request_param_mapping_input],
-            outputs=[request_param_mapping_input],
-        )
         remove_mapping_row_button.click(
             remove_request_param_mapping_row,
             inputs=[request_param_mapping_input],

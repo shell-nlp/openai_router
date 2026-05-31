@@ -8,7 +8,6 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openai_router.admin import (
-    add_request_param_mapping_row,
     deserialize_request_param_mapping_text,
     on_select_route,
     remove_request_param_mapping_row,
@@ -42,17 +41,6 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(
             rows,
             [["enable_thinking", "chat_template_kwargs.enable_thinking"]],
-        )
-
-    def test_add_request_param_mapping_row(self) -> None:
-        rows = add_request_param_mapping_row([["enable_thinking", "chat_template_kwargs.enable_thinking"]])
-
-        self.assertEqual(
-            rows,
-            [
-                ["enable_thinking", "chat_template_kwargs.enable_thinking"],
-                ["", ""],
-            ],
         )
 
     def test_remove_request_param_mapping_row(self) -> None:
