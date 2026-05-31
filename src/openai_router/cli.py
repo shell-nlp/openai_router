@@ -21,7 +21,7 @@ def _configure_logging() -> None:
     logger.add(sys.stderr, level="INFO")
     logger.add(
         loguru_sink,
-        level="INFO",
+        level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
     )
 

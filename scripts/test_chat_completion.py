@@ -35,7 +35,7 @@ PAYLOAD = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repeat", type=int, default=5, help="重复请求次数，默认 5")
+    parser.add_argument("--repeat", type=int, default=1, help="重复请求次数，默认 5")
     parser.add_argument(
         "--concurrency",
         type=int,

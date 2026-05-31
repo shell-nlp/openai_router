@@ -6,10 +6,12 @@ services:
       dockerfile: Dockerfile
     image: openai-router:latest
     container_name: openai-router
+    environment:
+      TZ: Asia/Shanghai
     volumes:
       - ./data:/app/data
     ports:
-      - "8000:8000"
+      - "28000:28000"
     restart: unless-stopped
-    command: openai-router --host 0.0.0.0 --port 8000
+    command: openai-router --host 0.0.0.0 --port 28000
   

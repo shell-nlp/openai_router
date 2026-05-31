@@ -104,6 +104,18 @@ class AdminTest(unittest.TestCase):
         self.assertIn("hello", logs)
         self.assertIn("world", logs)
 
+    def test_get_recent_logs_page_data_filters_by_level(self) -> None:
+        log_store.append("2026-05-31 12:00:00.000 | DEBUG    | debug-line")
+        log_store.append("2026-05-31 12:00:01.000 | INFO     | info-line")
+        log_store.append("2026-05-31 12:00:02.000 | WARNING  | warning-line")
+
+        status, logs = asyncio.run(get_recent_logs_page_data(["DEBUG", "WARNING"]))
+
+        self.assertIn("当前缓存 3 条日志，等级筛选后 2 条", status)
+        self.assertIn("debug-line", logs)
+        self.assertNotIn("info-line", logs)
+        self.assertIn("warning-line", logs)
+
 
 if __name__ == "__main__":
     unittest.main()

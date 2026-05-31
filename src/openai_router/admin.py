@@ -6,7 +6,7 @@ import gradio as gr
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
 
-from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, log_store
+from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, LOG_LEVELS, log_store
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -39,10 +39,11 @@ async def refresh_admin_tables() -> tuple[list[list[str]], list[list[str]]]:
     return await get_current_routes(), await get_current_backend_sources()
 
 
-async def get_recent_logs_page_data() -> tuple[str, str]:
-    total_logs, lines = await run_in_threadpool(
+async def get_recent_logs_page_data(levels: list[str] | None = None) -> tuple[str, str]:
+    total_logs, filtered_logs, lines = await run_in_threadpool(
         log_store.snapshot,
         DEFAULT_LOG_VIEW_LIMIT,
+        levels,
     )
     safe_logs = html.escape("\n".join(lines))
     rendered_logs = (
@@ -54,7 +55,11 @@ async def get_recent_logs_page_data() -> tuple[str, str]:
         f"{safe_logs}</pre>"
         "</div>"
     )
-    return f"当前缓存 {total_logs} 条日志，显示最近 {len(lines)} 条", rendered_logs
+    if levels:
+        status = f"当前缓存 {total_logs} 条日志，等级筛选后 {filtered_logs} 条，显示最近 {len(lines)} 条"
+    else:
+        status = f"当前缓存 {total_logs} 条日志，显示最近 {len(lines)} 条"
+    return status, rendered_logs
 
 
 def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
@@ -658,6 +663,12 @@ def create_admin_ui() -> gr.Blocks:
         _render_top_right_button("返回模型路由", "/")
         gr.Markdown("## 实时日志")
         gr.Markdown("页面每秒自动刷新一次，展示当前进程中的最近日志。")
+        log_level_filter = gr.CheckboxGroup(
+            choices=list(LOG_LEVELS),
+            value=[level for level in LOG_LEVELS if level != "DEBUG"],
+            label="日志等级",
+            info="支持多选；全部取消时默认显示所有等级。",
+        )
         logs_status_output = gr.Textbox(label="日志状态", interactive=False)
         logs_output = gr.HTML(
             label="最近日志",
@@ -670,14 +681,22 @@ def create_admin_ui() -> gr.Blocks:
 
         logs_page.load(
             get_recent_logs_page_data,
+            inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
         )
         logs_timer.tick(
             get_recent_logs_page_data,
+            inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
         )
         refresh_logs_button.click(
             get_recent_logs_page_data,
+            inputs=[log_level_filter],
+            outputs=[logs_status_output, logs_output],
+        )
+        log_level_filter.change(
+            get_recent_logs_page_data,
+            inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
         )
 
