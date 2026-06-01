@@ -90,7 +90,8 @@ INFO: Model response:
 
 ### 运行前准备
 
-- Python `3.11+`
+通用前置：
+
 - 一个已经能正常工作的 OpenAI 兼容后端
 - 后端地址建议先单独验证可用，例如：
 
@@ -98,9 +99,114 @@ INFO: Model response:
 curl http://127.0.0.1:8001/v1/models
 ```
 
-### 方式一：在当前仓库内运行（推荐）
+根据你选择的启动方式，还需：
 
-适合你现在这种直接使用本项目源码的方式。
+- **Docker 方式**：本机已安装 [Docker](https://docs.docker.com/get-docker/) 与 [Docker Compose v2](https://docs.docker.com/compose/install/)
+- **源码 / PyPI 方式**：本机已安装 Python `3.11+`
+
+### 方式一：使用 Docker 启动（推荐 ⭐）
+
+不用关心 Python 版本和本地依赖，下载镜像即可运行；后续升级、迁移、清理也更简单。
+
+仓库已经提供了 `Dockerfile`、`docker-compose.yml`（使用预构建镜像）和 `docker-compose-build.yml`（从源码本地构建）三份配置，可按需选择其中一种方式启动。
+
+#### 1.1 `docker run` 直接启动
+
+使用 Docker Hub 上的预构建镜像：
+
+```bash
+docker run -d \
+  --name openai-router \
+  --restart unless-stopped \
+  -p 8082:8082 \
+  -e TZ=Asia/Shanghai \
+  -v "$(pwd)/data:/app/data" \
+  506610466/openai-router:latest
+```
+
+如果想使用本仓库当前 commit 的代码，可以先本地构建再运行：
+
+```bash
+docker build -t openai-router:dev -f Dockerfile .
+
+docker run -d \
+  --name openai-router \
+  --restart unless-stopped \
+  -p 8082:8082 \
+  -e TZ=Asia/Shanghai \
+  -v "$(pwd)/data:/app/data" \
+  openai-router:dev
+```
+
+#### 1.2 `docker compose` 启动（推荐）
+
+更推荐使用 compose，配置和命令更易复用。
+
+**使用预构建镜像**（默认 `docker-compose.yml`，从 `506610466/openai-router:latest` 拉取）：
+
+```bash
+docker compose up -d
+```
+
+**从源码本地构建**（`docker-compose-build.yml`，会读取当前目录下的 `Dockerfile`）：
+
+```bash
+docker compose -f docker-compose-build.yml up --build -d
+```
+
+> ⚠️ 默认的 `docker-compose.yml` 里**没有** `build` 段，所以 `docker compose up --build -d` 不会触发本地构建；如果你想从源码构建，请使用 `docker-compose-build.yml`，或自行添加 `build` 配置。
+
+#### 1.3 启动后访问
+
+容器启动后，可在宿主机通过以下地址访问：
+
+- Web UI：`http://127.0.0.1:8082/`
+- OpenAI 兼容入口：`http://127.0.0.1:8082/v1`
+- Swagger 文档：`http://127.0.0.1:8082/docs`
+- 健康检查：`http://127.0.0.1:8082/health`
+
+先验证一下服务是否正常：
+
+```bash
+curl -i http://127.0.0.1:8082/health
+```
+
+返回 `HTTP/1.1 200 OK` 即表示启动成功。
+
+#### 1.4 常用运维
+
+- **修改宿主机端口**：把 `-p 8082:8082` 改成 `-p <宿主机端口>:8082` 即可；如果是 compose 文件，把 `ports` 一行改为 `"<宿主机端口>:8082"`，然后重新 `up -d`。
+- **数据持久化**：容器内 `/app/data` 已通过 volume 挂载到宿主机 `./data`，重启和升级容器后路由配置仍会保留。
+- **查看日志**：
+
+  ```bash
+  # docker run 方式
+  docker logs -f openai-router
+
+  # docker compose 方式
+  docker compose logs -f
+  # 或
+  docker compose -f docker-compose-build.yml logs -f
+  ```
+
+- **停止与重建**：
+
+  ```bash
+  # docker run 方式
+  docker stop openai-router
+  docker rm openai-router
+
+  # docker compose 方式
+  docker compose down
+  # 或
+  docker compose -f docker-compose-build.yml down
+  ```
+
+  升级到新版本时，建议先 `down` 再 `up -d`（或 `pull && up -d`），避免旧容器残留。
+
+### 方式二：在当前仓库内运行
+
+适合你想直接修改本项目源码、立即看到改动的场景。
 
 ```bash
 uv sync
@@ -114,7 +220,7 @@ pip install -e .
 openai-router --host 0.0.0.0 --port 28000
 ```
 
-### 方式二：从 PyPI 安装
+### 方式三：从 PyPI 安装
 
 ```bash
 uv tool install openai-router
@@ -158,14 +264,23 @@ openai-router --help
 
 服务启动后可访问：
 
-- Web UI：`http://127.0.0.1:28000/`
-- Swagger：`http://127.0.0.1:28000/docs`
-- 健康检查：`http://127.0.0.1:28000/health`
-- OpenAI 兼容入口：`http://127.0.0.1:28000/v1`
+- Web UI：`http://127.0.0.1:<端口>/`
+- Swagger：`http://127.0.0.1:<端口>/docs`
+- 健康检查：`http://127.0.0.1:<端口>/health`
+- OpenAI 兼容入口：`http://127.0.0.1:<端口>/v1`
+
+其中 `<端口>` 取决于启动方式：
+
+- **Docker 启动**：`<端口>` 默认是 `8082`
+- **源码 / PyPI 启动**：`<端口>` 默认是 `28000`
 
 先验证健康检查：
 
 ```bash
+# Docker 方式
+curl -i http://127.0.0.1:8082/health
+
+# 源码 / PyPI 方式
 curl -i http://127.0.0.1:28000/health
 ```
 
@@ -430,136 +545,6 @@ for chunk in stream:
 `GET /v1/responses/{response_id}` 和 `POST /v1/responses/{response_id}/cancel` 会根据 Router 在创建
 `POST /v1/responses` 时记录的 `response_id -> backend` 映射进行转发，因此要求创建、查询、取消请求经过同一个
 Router 进程；如果 Router 重启，这类映射会失效。
-
----
-
-## Docker 用法
-
-仓库已经提供了 `Dockerfile`、`docker-compose.yml`（使用预构建镜像）和 `docker-compose-build.yml`（从源码本地构建）三份配置，可按需选择其中一种方式启动。
-
-### 前置准备
-
-- 已安装 [Docker](https://docs.docker.com/get-docker/) 与 [Docker Compose v2](https://docs.docker.com/compose/install/)（`docker compose` 命令）
-- 宿主机当前目录（或任意你指定的目录）可写，用于挂载 SQLite 持久化文件
-- 主机 `8082` 端口未被占用（如需改端口，下文有说明）
-
-### 方式一：`docker run` 直接启动
-
-适合不想写 compose 文件、只想快速跑起来的情况。
-
-#### 1.1 使用 Docker Hub 预构建镜像
-
-```bash
-docker run -d \
-  --name openai-router \
-  --restart unless-stopped \
-  -p 8082:8082 \
-  -e TZ=Asia/Shanghai \
-  -v "$(pwd)/data:/app/data" \
-  506610466/openai-router:latest
-```
-
-#### 1.2 从源码本地构建镜像
-
-如果想使用本仓库当前 commit 的代码，可以先构建再运行：
-
-```bash
-docker build -t openai-router:dev -f Dockerfile .
-
-docker run -d \
-  --name openai-router \
-  --restart unless-stopped \
-  -p 8082:8082 \
-  -e TZ=Asia/Shanghai \
-  -v "$(pwd)/data:/app/data" \
-  openai-router:dev
-```
-
-#### 1.3 修改宿主机端口
-
-如果宿主机 `8082` 已被占用，把 `-p 8082:8082` 改成 `-p <宿主机端口>:8082` 即可，例如 `-p 9000:8082`，后续请用 `http://127.0.0.1:9000/` 访问。
-
-### 方式二：`docker compose` 启动
-
-#### 2.1 使用预构建镜像
-
-`docker-compose.yml` 默认从 `506610466/openai-router:latest` 拉取镜像后启动：
-
-```bash
-docker compose up -d
-```
-
-首次拉取可能需要几十秒，之后启动几乎是即时的。
-
-#### 2.2 从源码本地构建
-
-仓库额外提供了 `docker-compose-build.yml`，会读取当前目录下的 `Dockerfile` 在本地构建镜像：
-
-```bash
-docker compose -f docker-compose-build.yml up --build -d
-```
-
-构建完成后镜像会打上 `openai-router:latest` 标签。
-
-> ⚠️ 注意：默认的 `docker-compose.yml` 里**没有** `build` 段，所以 `docker compose up --build -d` 不会触发本地构建。如果你希望从源码构建，请使用 `docker-compose-build.yml`，或自己添加 `build` 配置。
-
-#### 2.3 修改宿主机端口
-
-打开对应的 compose 文件，把 `ports` 一行改为 `"<宿主机端口>:8082"`，例如 `"9000:8082"`，然后重新执行 `docker compose up -d`。
-
-### 启动后访问
-
-容器启动后，可在宿主机通过以下地址访问：
-
-- Web UI：`http://127.0.0.1:8082/`
-- OpenAI 兼容入口：`http://127.0.0.1:8082/v1`
-- Swagger 文档：`http://127.0.0.1:8082/docs`
-- 健康检查：`http://127.0.0.1:8082/health`
-
-先验证一下服务是否正常：
-
-```bash
-curl -i http://127.0.0.1:8082/health
-```
-
-返回 `HTTP/1.1 200 OK` 即表示启动成功。
-
-### 数据持久化
-
-容器内的数据目录 `/app/data` 已通过 volume 挂载到宿主机：
-
-```text
-./data -> /app/data
-```
-
-重启或升级容器后，路由配置仍会保留。如果要清空数据，停止容器后删除宿主机对应的 `./data` 目录即可。
-
-### 查看日志
-
-```bash
-# docker run 方式
-docker logs -f openai-router
-
-# docker compose 方式
-docker compose logs -f
-# 或
-docker compose -f docker-compose-build.yml logs -f
-```
-
-### 停止与重建
-
-```bash
-# docker run 方式
-docker stop openai-router
-docker rm openai-router
-
-# docker compose 方式
-docker compose down
-# 或
-docker compose -f docker-compose-build.yml down
-```
-
-升级到新版本时，建议先 `down` 再 `up -d`（或 `pull && up -d`），避免旧容器残留。
 
 ---
 
