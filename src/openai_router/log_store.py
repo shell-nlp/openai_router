@@ -5,7 +5,7 @@ from typing import Iterable
 
 
 MAX_LOG_LINES = 5_000
-DEFAULT_LOG_VIEW_LIMIT = 1_000
+DEFAULT_LOG_VIEW_LIMIT = 200
 LOG_LEVELS = ("DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
 _LOG_LEVEL_PATTERN = re.compile(r"\|\s*([A-Z]+)\s*\|")
 

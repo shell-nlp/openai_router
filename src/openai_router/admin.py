@@ -410,29 +410,11 @@ const scrollToBottom = () => {
   }
 };
 
-const attachAutoScroll = () => {
-  if (element.__logAutoScrollObserver) {
-    element.__logAutoScrollObserver.disconnect();
-  }
-
-  element.__logAutoScrollObserver = new MutationObserver(() => {
-    requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
-  });
-
-  element.__logAutoScrollObserver.observe(element, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
-
-  scrollToBottom();
-};
-
 watch('value', () => {
-  requestAnimationFrame(() => requestAnimationFrame(attachAutoScroll));
+  requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
 });
 
-attachAutoScroll();
+requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
 """
 
 
@@ -683,7 +665,7 @@ def create_admin_ui() -> gr.Blocks:
         gr.Navbar(main_page_name="模型路由")
         _render_top_right_button("返回模型路由", "/")
         gr.Markdown("## 实时日志")
-        gr.Markdown("页面每秒自动刷新一次，展示当前进程中的最近日志。")
+        gr.Markdown("页面每 2 秒自动刷新一次，展示当前进程中的最近日志。")
         log_level_filter = gr.CheckboxGroup(
             choices=list(LOG_LEVELS),
             value=[level for level in LOG_LEVELS if level != "DEBUG"],
@@ -698,27 +680,32 @@ def create_admin_ui() -> gr.Blocks:
             elem_id="live-log-output",
         )
         refresh_logs_button = gr.Button("立即刷新")
-        logs_timer = gr.Timer(1)
+        logs_timer = gr.Timer(2)
 
         logs_page.load(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
+            queue=False,
         )
         logs_timer.tick(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
+            queue=False,
+            trigger_mode="always_last",
         )
         refresh_logs_button.click(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
+            queue=False,
         )
         log_level_filter.change(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
             outputs=[logs_status_output, logs_output],
+            queue=False,
         )
 
     return admin_ui

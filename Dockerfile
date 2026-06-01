@@ -19,4 +19,4 @@ RUN uv sync --frozen
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["openai-router", "--host", "0.0.0.0", "--port", "28000"]
+CMD ["openai-router", "--host", "0.0.0.0", "--port", "8082"]
