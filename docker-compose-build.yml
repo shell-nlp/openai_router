@@ -1,8 +1,11 @@
-# 直接从镜像启动容器
+# 用于从源码构建镜像，启动容器
 version: "3.9"
 services:
   openai-router:
-    image: 506610466/openai-router:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openai-router:latest
     container_name: openai-router
     environment:
       TZ: Asia/Shanghai
