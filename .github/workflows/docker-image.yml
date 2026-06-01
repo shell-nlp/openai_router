@@ -1,0 +1,71 @@
+name: Docker Image CI
+
+on:
+  # release:
+  #   types:
+  #     - published  # 当发布新的 release 时触发
+  push:
+    branches:
+    - build_image # 在推送到 build_image 分支时触发构建
+    - set_latest # 在推送到 set_latest 分支时触发打 latest 标签
+
+jobs:
+  build_version:
+    if: github.ref == 'refs/heads/build_image'
+    runs-on: ubuntu-latest
+    steps:
+    # 检出代码
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 登录 Docker Hub
+    - name: Log in to Docker Hub
+      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+    # 从 pyproject.toml 中抽取版本信息
+    - name: Extract version
+      id: get_version
+      run: |
+        # 使用 grep 和 sed 从 pyproject.toml 中提取版本
+        version=$(grep -Po '(?<=^version = ")[^"]*' pyproject.toml)
+        echo "VERSION=$version" >> $GITHUB_ENV
+
+    # 构建 Docker 镜像
+    - name: Build Docker image
+      run: |
+        docker build -f Dockerfile -t ${{ secrets.DOCKER_USERNAME }}/openai-router:${{ env.VERSION }} .
+
+    # 推送镜像到 Docker Hub
+    - name: Push Docker image
+      run: |
+        docker push ${{ secrets.DOCKER_USERNAME }}/openai-router:${{ env.VERSION }}
+
+  tag_latest:
+    if: github.ref == 'refs/heads/set_latest'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Log in to Docker Hub
+      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+    - name: Extract version
+      id: get_version
+      run: |
+        version=$(grep -Po '(?<=^version = ")[^"]*' pyproject.toml)
+        echo "VERSION=$version" >> $GITHUB_ENV
+
+    # 安装 skopeo
+    - name: Install skopeo
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y skopeo
+
+    # 使用 skopeo 高效地为远程镜像打 latest 标签
+    # 这条命令直接在 Docker Hub 上操作，不会下载任何镜像层
+    - name: Retag remote image without pulling
+      run: |
+        skopeo copy \
+          docker://${{ secrets.DOCKER_USERNAME }}/openai-router:${{ env.VERSION }} \
+          docker://${{ secrets.DOCKER_USERNAME }}/openai-router:latest
