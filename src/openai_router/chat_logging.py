@@ -34,8 +34,32 @@ def _log_chat_response(response_content: bytes) -> None:
         content = _extract_chat_content(data)
         if content:
             logger.info("Model response:\n{}", content)
+        usage = _extract_usage(data)
+        if usage:
+            _log_usage(usage)
     except Exception:
         pass
+
+
+def _extract_usage(response_data: dict[str, Any]) -> dict[str, Any] | None:
+    usage = response_data.get("usage")
+    if isinstance(usage, dict):
+        return usage
+
+    response = response_data.get("response")
+    if isinstance(response, dict):
+        nested_usage = response.get("usage")
+        if isinstance(nested_usage, dict):
+            return nested_usage
+
+    return None
+
+
+def _log_usage(usage: dict[str, Any]) -> None:
+    logger.info(
+        "Token usage: {}",
+        json.dumps(usage, ensure_ascii=False, sort_keys=True),
+    )
 
 
 def _parse_sse_data(line: str) -> dict[str, Any] | None:
@@ -50,9 +74,12 @@ def _parse_sse_data(line: str) -> dict[str, Any] | None:
     return None
 
 
-def _extract_stream_content(chunks: list[bytes]) -> str | None:
+def _extract_stream_content_and_usage(
+    chunks: list[bytes],
+) -> tuple[str | None, dict[str, Any] | None]:
     content_parts = []
     reasoning_parts = []
+    usage = None
     for chunk in chunks:
         try:
             chunk_str = chunk.decode("utf-8")
@@ -60,6 +87,9 @@ def _extract_stream_content(chunks: list[bytes]) -> str | None:
                 data = _parse_sse_data(line)
                 if data is None:
                     continue
+                extracted_usage = _extract_usage(data)
+                if extracted_usage:
+                    usage = extracted_usage
                 choices = data.get("choices", [])
                 for choice in choices:
                     delta = choice.get("delta", {})
@@ -78,17 +108,20 @@ def _extract_stream_content(chunks: list[bytes]) -> str | None:
 
     if reasoning_parts:
         return (
-            f"<think>\n{''.join(reasoning_parts)}\n</think>\n{''.join(content_parts)}"
+            f"<think>\n{''.join(reasoning_parts)}\n</think>\n{''.join(content_parts)}",
+            usage,
         )
-    elif content_parts:
-        return "".join(content_parts)
-    return None
+    if content_parts:
+        return "".join(content_parts), usage
+    return None, usage
 
 
 def _log_stream_chat_response(chunks: list[bytes]) -> None:
-    content = _extract_stream_content(chunks)
+    content, usage = _extract_stream_content_and_usage(chunks)
     if content:
         logger.info("Model response:\n{}", content)
+    if usage:
+        _log_usage(usage)
 
 
 async def _stream_backend_response_with_logging(
