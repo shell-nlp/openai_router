@@ -21,11 +21,80 @@ def _extract_chat_content(response_data: dict[str, Any]) -> str | None:
         if message:
             content = message.get("content")
             reasoning = message.get("reasoning") or message.get("thinking")
-            if reasoning:
-                return f"<think>\n{reasoning}\n</think>\n{content or ''}"
-            if content:
-                return content
+            tool_output = _format_tool_calls_from_message(message)
+            return _join_model_output(content, reasoning, tool_output)
     return None
+
+
+def _join_model_output(
+    content: str | None,
+    reasoning: str | None,
+    tool_output: str | None,
+) -> str | None:
+    output_parts = []
+    if reasoning:
+        output_parts.append(f"<think>\n{reasoning}\n</think>")
+    if content:
+        output_parts.append(content)
+    if tool_output:
+        output_parts.append(tool_output)
+    if output_parts:
+        return "\n".join(output_parts)
+    return None
+
+
+def _format_tool_calls_from_message(message: dict[str, Any]) -> str | None:
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        return _format_tool_calls(tool_calls)
+
+    function_call = message.get("function_call")
+    if isinstance(function_call, dict):
+        return _format_tool_calls([{"function": function_call}])
+
+    return None
+
+
+def _format_tool_calls(tool_calls: list[dict[str, Any]]) -> str | None:
+    rendered_calls = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            function = tool_call
+
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+
+        rendered = [f"<tool_call>\n<function={name}>\n"]
+        for argument_name, argument_value in _parse_tool_arguments(
+            function.get("arguments")
+        ).items():
+            rendered.append(f"<parameter={argument_name}>\n")
+            if isinstance(argument_value, str):
+                rendered.append(argument_value)
+            else:
+                rendered.append(
+                    json.dumps(argument_value, ensure_ascii=False, sort_keys=True)
+                )
+            rendered.append("\n</parameter>\n")
+        rendered.append("</function>\n</tool_call>")
+        rendered_calls.append("".join(rendered))
+
+    if rendered_calls:
+        return "\n".join(rendered_calls)
+    return None
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(arguments, dict):
+        return arguments
+    return {}
 
 
 def _log_chat_response(response_content: bytes) -> None:
@@ -79,6 +148,7 @@ def _extract_stream_content_and_usage(
 ) -> tuple[str | None, dict[str, Any] | None]:
     content_parts = []
     reasoning_parts = []
+    tool_calls_by_index: dict[int, dict[str, str]] = {}
     usage = None
     for chunk in chunks:
         try:
@@ -103,17 +173,72 @@ def _extract_stream_content_and_usage(
                     )
                     if reasoning:
                         reasoning_parts.append(reasoning)
+                    _accumulate_stream_tool_calls(delta, tool_calls_by_index)
         except Exception:
             continue
 
+    tool_output = _format_stream_tool_calls(tool_calls_by_index)
     if reasoning_parts:
         return (
-            f"<think>\n{''.join(reasoning_parts)}\n</think>\n{''.join(content_parts)}",
+            _join_model_output(
+                "".join(content_parts),
+                "".join(reasoning_parts),
+                tool_output,
+            ),
             usage,
         )
     if content_parts:
-        return "".join(content_parts), usage
-    return None, usage
+        return _join_model_output("".join(content_parts), None, tool_output), usage
+    return tool_output, usage
+
+
+def _accumulate_stream_tool_calls(
+    delta: dict[str, Any],
+    tool_calls_by_index: dict[int, dict[str, str]],
+) -> None:
+    tool_calls = delta.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for fallback_index, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                continue
+            index = tool_call.get("index")
+            if not isinstance(index, int):
+                index = fallback_index
+            stream_tool_call = tool_calls_by_index.setdefault(
+                index,
+                {"name": "", "arguments": ""},
+            )
+            function = tool_call.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                if isinstance(name, str) and not stream_tool_call["name"]:
+                    stream_tool_call["name"] = name
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    stream_tool_call["arguments"] += arguments
+
+    function_call = delta.get("function_call")
+    if isinstance(function_call, dict):
+        stream_tool_call = tool_calls_by_index.setdefault(
+            0,
+            {"name": "", "arguments": ""},
+        )
+        name = function_call.get("name")
+        if isinstance(name, str) and not stream_tool_call["name"]:
+            stream_tool_call["name"] = name
+        arguments = function_call.get("arguments")
+        if isinstance(arguments, str):
+            stream_tool_call["arguments"] += arguments
+
+
+def _format_stream_tool_calls(
+    tool_calls_by_index: dict[int, dict[str, str]],
+) -> str | None:
+    tool_calls = [
+        {"function": tool_calls_by_index[index]}
+        for index in sorted(tool_calls_by_index)
+    ]
+    return _format_tool_calls(tool_calls)
 
 
 def _log_stream_chat_response(chunks: list[bytes]) -> None:
