@@ -136,6 +136,7 @@ def create_app() -> FastAPI:
             rendered_prompt = chat_template.render(
                 messages=messages,
                 add_generation_prompt=True,
+                tools=resolved_request.json_body.get("tools"),
             )
             logger.info("prompt:\n{}", rendered_prompt)
         if resolved_request.json_body.get("stream", False):
