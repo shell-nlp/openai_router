@@ -1,8 +1,9 @@
 import asyncio
 import json
+import warnings
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
-import warnings
+from pathlib import Path
 
 import gradio as gr
 import httpx
@@ -10,7 +11,6 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
-from pathlib import Path
 
 from openai_router.admin import ADMIN_CSS, create_admin_ui
 from openai_router.config import MODEL_SYNC_CHECK_INTERVAL_SECONDS
@@ -48,6 +48,8 @@ jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(),
 )
+# tojson 默认 ensure_ascii=True，会把 tools 中的中文转成 \uXXXX 转义，导致日志里显示为乱码
+jinja_env.policies["json.dumps_kwargs"] = {"sort_keys": True, "ensure_ascii": False}
 jinja_env.filters["parse_tool_arguments"] = parse_tool_arguments
 chat_template = jinja_env.get_template("chat_template.jinja")
 
