@@ -130,18 +130,19 @@ class AdminTest(unittest.TestCase):
         log_store.append("2026-05-31 12:00:00.000 | INFO     | hello")
         log_store.append("2026-05-31 12:00:01.000 | ERROR    | world")
 
-        status, logs = asyncio.run(get_recent_logs_page_data())
+        status, logs, total = asyncio.run(get_recent_logs_page_data())
 
         self.assertIn("当前缓存 2 条日志", status)
         self.assertIn("hello", logs)
         self.assertIn("world", logs)
+        self.assertEqual(total, 2)
 
     def test_get_recent_logs_page_data_filters_by_level(self) -> None:
         log_store.append("2026-05-31 12:00:00.000 | DEBUG    | debug-line")
         log_store.append("2026-05-31 12:00:01.000 | INFO     | info-line")
         log_store.append("2026-05-31 12:00:02.000 | WARNING  | warning-line")
 
-        status, logs = asyncio.run(get_recent_logs_page_data(["DEBUG", "WARNING"]))
+        status, logs, total = asyncio.run(get_recent_logs_page_data(["DEBUG", "WARNING"]))
 
         self.assertIn("当前缓存 3 条日志，等级筛选后 2 条", status)
         self.assertIn("debug-line", logs)

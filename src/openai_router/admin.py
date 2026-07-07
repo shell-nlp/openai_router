@@ -6,7 +6,7 @@ import gradio as gr
 import pandas as pd
 from starlette.concurrency import run_in_threadpool
 
-from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, LOG_LEVELS, log_store
+from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, LOG_LEVELS, MAX_LOG_LINE_LENGTH, log_store
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -39,18 +39,29 @@ async def refresh_admin_tables() -> tuple[list[list[str]], list[list[str]]]:
     return await get_current_routes(), await get_current_backend_sources()
 
 
-async def get_recent_logs_page_data(levels: list[str] | None = None) -> tuple[str, str]:
+def _truncate_lines(lines: list[str]) -> list[str]:
+    return [
+        (line[:MAX_LOG_LINE_LENGTH] + "… (truncated)")
+        if len(line) > MAX_LOG_LINE_LENGTH
+        else line
+        for line in lines
+    ]
+
+
+async def get_recent_logs_page_data(levels: list[str] | None = None) -> tuple[str, str, int]:
     total_logs, filtered_logs, lines = await run_in_threadpool(
         log_store.snapshot,
         DEFAULT_LOG_VIEW_LIMIT,
         levels,
     )
-    safe_logs = html.escape("\n".join(lines))
+    current_seq = await run_in_threadpool(log_store.get_sequence)
+    truncated = _truncate_lines(lines)
+    safe_logs = html.escape("\n".join(truncated))
     rendered_logs = (
         "<div id='log-scrollbox' style='max-height: 70vh; overflow-y: auto; "
         "background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; "
         "border-radius: 8px; padding: 12px;'>"
-        "<pre style='margin: 0; font-family: monospace; font-size: 13px; "
+        "<pre id='persistent-log-view' style='margin: 0; font-family: monospace; font-size: 13px; "
         "line-height: 1.5; white-space: pre-wrap; word-break: break-word;'>"
         f"{safe_logs}</pre>"
         "</div>"
@@ -59,7 +70,25 @@ async def get_recent_logs_page_data(levels: list[str] | None = None) -> tuple[st
         status = f"当前缓存 {total_logs} 条日志，等级筛选后 {filtered_logs} 条，显示最近 {len(lines)} 条"
     else:
         status = f"当前缓存 {total_logs} 条日志，显示最近 {len(lines)} 条"
-    return status, rendered_logs
+    return status, rendered_logs, current_seq
+
+
+async def get_logs_incremental(
+    last_seq: int,
+    levels: list[str] | None = None,
+) -> tuple[str, str, int]:
+    total, _, new_lines, current_seq = await run_in_threadpool(
+        log_store.get_lines_since, last_seq, DEFAULT_LOG_VIEW_LIMIT, levels,
+    )
+    if not new_lines:
+        if total == 0:
+            return "暂无日志", "", current_seq
+        return f"缓存 {total} 条日志，无新日志", "", current_seq
+
+    truncated = _truncate_lines(new_lines)
+    text = html.escape("\n".join(truncated))
+    status = f"缓存 {total} 条日志，新增 {len(new_lines)} 条"
+    return status, text, current_seq
 
 
 def _normalize_request_param_mapping_rows(rows: Any) -> list[list[str]]:
@@ -409,12 +438,22 @@ const scrollToBottom = () => {
     box.scrollTop = box.scrollHeight;
   }
 };
-
-watch('value', () => {
-  requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
-});
-
 requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
+"""
+
+LOG_ACCUMULATOR_JS = """
+(value) => {
+  if (!value) return;
+  const pre = document.querySelector('#persistent-log-view');
+  if (!pre) return;
+  pre.textContent += '\\n' + value;
+  const maxChars = 100000;
+  if (pre.textContent.length > maxChars) {
+    pre.textContent = pre.textContent.slice(-maxChars);
+  }
+  const scrollbox = document.querySelector('#log-scrollbox');
+  if (scrollbox) scrollbox.scrollTop = scrollbox.scrollHeight;
+}
 """
 
 
@@ -665,7 +704,7 @@ def create_admin_ui() -> gr.Blocks:
         gr.Navbar(main_page_name="模型路由")
         _render_top_right_button("返回模型路由", "/")
         gr.Markdown("## 实时日志")
-        gr.Markdown("页面每 2 秒自动刷新一次，展示当前进程中的最近日志。")
+        gr.Markdown("页面每 2 秒增量追加新日志，避免全量重渲染导致的卡顿。")
         log_level_filter = gr.CheckboxGroup(
             choices=list(LOG_LEVELS),
             value=[level for level in LOG_LEVELS if level != "DEBUG"],
@@ -679,32 +718,39 @@ def create_admin_ui() -> gr.Blocks:
             js_on_load=LOG_VIEWER_JS,
             elem_id="live-log-output",
         )
+        log_state = gr.State(0)
+        log_accumulator = gr.Textbox(visible=False, elem_id="log-accumulator")
         refresh_logs_button = gr.Button("立即刷新")
         logs_timer = gr.Timer(2)
 
         logs_page.load(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
-            outputs=[logs_status_output, logs_output],
+            outputs=[logs_status_output, logs_output, log_state],
             queue=False,
         )
         logs_timer.tick(
-            get_recent_logs_page_data,
-            inputs=[log_level_filter],
-            outputs=[logs_status_output, logs_output],
+            get_logs_incremental,
+            inputs=[log_state, log_level_filter],
+            outputs=[logs_status_output, log_accumulator, log_state],
             queue=False,
             trigger_mode="always_last",
+        )
+        log_accumulator.change(
+            None,
+            inputs=[log_accumulator],
+            js=LOG_ACCUMULATOR_JS,
         )
         refresh_logs_button.click(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
-            outputs=[logs_status_output, logs_output],
+            outputs=[logs_status_output, logs_output, log_state],
             queue=False,
         )
         log_level_filter.change(
             get_recent_logs_page_data,
             inputs=[log_level_filter],
-            outputs=[logs_status_output, logs_output],
+            outputs=[logs_status_output, logs_output, log_state],
             queue=False,
         )
 
