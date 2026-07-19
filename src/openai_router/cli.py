@@ -29,7 +29,7 @@ def _configure_logging() -> None:
 @cli_app.command()
 def main(
     host: Annotated[str, typer.Option(help="指定监听的主机地址", show_default=True)] = "0.0.0.0",
-    port: Annotated[int, typer.Option(help="指定监听的主机端口", show_default=True)] = 28000,
+    port: Annotated[int, typer.Option(help="指定监听的主机端口", show_default=True)] = 8082,
 ) -> None:
     _configure_logging()
     display_host = _get_display_host(host)

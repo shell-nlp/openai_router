@@ -15,7 +15,8 @@ COPY pyproject.toml uv.lock README.md /app/
 COPY src /app/src
 COPY static /app/static
 
-RUN uv sync --frozen
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 ENV PATH="/app/.venv/bin:$PATH"
 

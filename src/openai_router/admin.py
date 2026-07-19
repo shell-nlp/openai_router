@@ -7,6 +7,7 @@ import pandas as pd
 from starlette.concurrency import run_in_threadpool
 
 from openai_router.log_store import DEFAULT_LOG_VIEW_LIMIT, LOG_LEVELS, MAX_LOG_LINE_LENGTH, log_store
+from openai_router import repositories
 from openai_router.runtime import runtime_state
 from openai_router.services import route_service
 
@@ -351,13 +352,43 @@ async def get_overview_data() -> tuple[str, str, str, str]:
     return get_router_base_url(), route_summary, source_summary, routing_policy
 
 
-async def add_or_update_route_page(
+async def add_route_page(
     model_name: str,
     aliases_text: str | None,
     model_url: str,
     api_key: str | None,
     request_param_mapping_rows: Any,
 ) -> tuple[str, list[list[str]]]:
+    status_message, routes, _ = await add_or_update_route(
+        model_name,
+        aliases_text,
+        model_url,
+        api_key,
+        request_param_mapping_rows,
+    )
+    return status_message, routes
+
+
+async def update_route_page(
+    model_name: str,
+    aliases_text: str | None,
+    model_url: str,
+    api_key: str | None,
+    request_param_mapping_rows: Any,
+) -> tuple[str, list[list[str]]]:
+    normalized_model_name = model_name.strip() if model_name else ""
+    normalized_model_url = model_url.strip() if model_url else ""
+    if not normalized_model_name or not normalized_model_url:
+        routes = await get_current_routes()
+        return "请填写完整的模型名称和后端 URL", routes
+
+    existing = await run_in_threadpool(
+        repositories.find_route, normalized_model_name, normalized_model_url
+    )
+    if existing is None:
+        routes = await get_current_routes()
+        return f"路由 '{normalized_model_name} -> {normalized_model_url}' 不存在，请先使用「添加路由」创建", routes
+
     status_message, routes, _ = await add_or_update_route(
         model_name,
         aliases_text,
@@ -484,6 +515,10 @@ def create_admin_ui() -> gr.Blocks:
 
         with gr.Row():
             with gr.Column(scale=2):
+                with gr.Row():
+                    add_route_button = gr.Button("添加路由")
+                    update_route_button = gr.Button("更新路由", variant="primary")
+                    delete_button = gr.Button("删除路由", variant="stop")
                 routes_datagrid = gr.DataFrame(
                     headers=[
                         "模型名称",
@@ -528,9 +563,6 @@ def create_admin_ui() -> gr.Blocks:
                 with gr.Row():
                     add_mapping_row_button = gr.Button("添加映射行")
                     remove_mapping_row_button = gr.Button("删除映射行")
-                with gr.Row():
-                    add_update_button = gr.Button("添加 / 更新路由")
-                    delete_button = gr.Button("删除路由", variant="stop")
 
         admin_ui.load(
             get_overview_data,
@@ -562,8 +594,19 @@ def create_admin_ui() -> gr.Blocks:
             inputs=[request_param_mapping_input],
             outputs=[request_param_mapping_input],
         )
-        add_update_button.click(
-            add_or_update_route_page,
+        add_route_button.click(
+            add_route_page,
+            inputs=[
+                model_name_input,
+                aliases_input,
+                model_url_input,
+                route_api_key_input,
+                request_param_mapping_input,
+            ],
+            outputs=[routes_status_output, routes_datagrid],
+        )
+        update_route_button.click(
+            update_route_page,
             inputs=[
                 model_name_input,
                 aliases_input,
